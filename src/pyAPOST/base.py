@@ -11,13 +11,13 @@ from pyscf.dft.numint import eval_ao
 from pyscf.dft.gen_grid import Grids, get_partition, gen_atomic_grids, radi
 
 
-from pyAPOST.part_schemes import becke_w
-
+from pyAPOST.part_schemes import becke_w, tfvc_apost_w
 
 
 # INFO: PySCF works with NPArrayWithTag from its own library
 
 # TODO: Use attr library to lock the value of attributes once they are initialized after a new object.
+# TODO: Decide how to pass the log level. Right now it's changed on EOS function but maybe it should be pased here
 # the worry is that if left unchecked, because we are parsing from pyscf Mole/Calc if they change for whatever
 # reason that could be traced to the related variables inside pyAPOST. A brute force solution would be to use
 # copy library but it would be annoying.
@@ -154,8 +154,8 @@ class APOSTBase(object):
         # Initialize Hpart or Rpart
         if part_name in ["mulliken", "lowdin", "meta_lowdin", "iao", "nao"]:
             self._part = Hpart(part_name, mol, frags=frags)
-        elif part_name in ["becke"]:
-            self._part = Rpart(part_name, mol, self._atnums, frags=frags)
+        elif part_name in ["becke", 'tfvc']:
+            self._part = Rpart(part_name, mol,(self._dm_a, self._dm_b),self._atnums, frags=frags)
         else:
             raise ValueError("Could not identify partition. Choose from: Mulliken,Lowdin,Meta-Lowdin,IAO,NAO")
 
@@ -264,10 +264,11 @@ class Rpart(object):
     # Optional: allow to pass coords and weights bypassing relying on the PySCF Grids
     # todo: Allow to specify radial and angular points. in that case a dic is created to pass to atom_grid attribute before building the grid
     # todo: allow to specify radii type, radii method and empirical values (Bragg/Trehluer), and prune
-    def __init__(self, part_name, mol, atnums, frags=None, sort_grids=False, atom_grid_specs=None):
+    def __init__(self, part_name, mol, dm, atnums, frags=None, sort_grids=False, atom_grid_specs=None):
         print('DEV: Rpart')
         print(part_name)
         self._part_name = part_name
+        dm_a, dm_b = dm
 
 
         # If frags are None then it computes it for atoms
@@ -280,10 +281,12 @@ class Rpart(object):
             else:
                 self._frags = frags
                 zatoms = mol.atom_charges()
-                self._zfrags = [sum(zatoms[i - 1] for i in group) for group in frags]
+                self._zfrags = [sum(zatoms[i - 1] for i in group) for group in self._frags]
         else:
             # Force to have atoms as frags
             self._frags = np.array([[i + 1] for i in range(mol.natm)])
+            zatoms = mol.atom_charges()
+            self._zfrags = [sum(zatoms[i - 1] for i in group) for group in self._frags]
 
 
         # Define molecular grid and access points and weights
@@ -313,7 +316,13 @@ class Rpart(object):
         # Weights = radial(quadrature) + angular + becke
         self._weights = self._grid.weights
         self._grid_to_atom_idx = self._grid.atm_idx
-        self._aim_w = becke_w(self._coords, mol.atom_coords(), atnums, self._grid_to_atom_idx)
+        if part_name == 'becke':
+            self._aim_w = becke_w(self._coords, mol.atom_coords(), atnums, self._grid_to_atom_idx)
+        elif part_name == 'tfvc':
+            # self._aim_w = tfvc_w(mol, dm_a, self._coords, mol.atom_coords(), atnums, self._grid_to_atom_idx)
+            self._aim_w = tfvc_apost_w(mol, dm_a, self._coords, mol.atom_coords(), atnums, self._grid_to_atom_idx)
+        else:
+            raise NotImplementedError(f"Unknown part name: {part_name}")
         # Store computed atomic orbitals in a grid
         self._ao_eval_grid = eval_ao(mol, self._coords)
 
@@ -349,10 +358,6 @@ class Rpart(object):
     @property
     def zfrags(self):
         return self._zfrags
-
-
-
-        # assert 5 == 6
 
 class Hpart(object):
     # Eta, transformation matrix

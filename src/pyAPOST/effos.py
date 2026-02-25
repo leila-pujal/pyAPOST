@@ -142,9 +142,12 @@ def qij_real(APOSTBase, frags=None, gen=False):
         pop_b = np.sum(dens_grid_b * APOSTBase.part._grid.quadrature_weights * tmp_w)
         pop_a_all.append(pop_a)
         pop_b_all.append(pop_b)
-        logger.debug(f' ALPHA POPULATION Frag {ifrag+1} : {pop_a :.4f}')
-        logger.debug(f' BETA POPULATION Frag {ifrag + 1} : {pop_b :.4f}')
-        logger.debug(f' TOTAL POPULATION Frag {ifrag + 1} : {pop_a + pop_b :.4f}\n')
+        if APOSTBase._sd and not APOSTBase.unrestr:
+            logger.debug(f' TOTAL POPULATION Frag {ifrag + 1} : {pop_a :.4f}\n')
+        else:
+            logger.debug(f' ALPHA POPULATION Frag {ifrag+1} : {pop_a :.4f}')
+            logger.debug(f' BETA POPULATION Frag {ifrag + 1} : {pop_b :.4f}')
+            logger.debug(f' TOTAL POPULATION Frag {ifrag + 1} : {pop_a + pop_b :.4f}\n')
         for i in range(APOSTBase.occ_a[APOSTBase.occ_a > 0].shape[0]):
             for j in range(APOSTBase.occ_a[APOSTBase.occ_a > 0].shape[0]):
                 ij_a = mo_grid_a[i, :] * mo_grid_a[j, :] * (tmp_w**2) * APOSTBase.part._grid.quadrature_weights # Do we need to multiply by the occupations?
@@ -554,7 +557,7 @@ def EOS_calc(APOSTBase, gen=False, vis=None, log='info'):
     logger.info("")
     logger.info('  Effective oxidation calculation  ')
     logger.info('  Information ')
-    if frags:
+    if np.array(frags).shape[0] < APOSTBase.natm:
         logger.info(f'  Fragments: {len(APOSTBase.part.frags)} ')
         for idx, f1 in enumerate(APOSTBase.part.frags):
             logger.info(f'  Fragment {idx}: Atoms {f1}, Total charge {APOSTBase.part.zfrags[idx]} ')
