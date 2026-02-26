@@ -41,7 +41,9 @@ def mu_cord(grid_cords, atm_coords):
     mu_ab = mu_ab[:, None, :] - mu_ab[None, :]
     # Compute atm_coords distance R_AB. symmetric array Natm, Natm
     r_ab = np.linalg.norm(atm_coords[:, None, :] - atm_coords[None, :, :], axis=-1)
-    mu_ab = mu_ab / r_ab[:, :, None]  # Expecting Nans for A=B
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        mu_ab = mu_ab / r_ab[:, :, None]  # Expecting Nans for A=B
     # Option: we could keep the natom_natom_mu
     mu_ab = mu_ab.transpose([2, 0, 1]) # transpose to have mu_ab values as first dimension
     return mu_ab
