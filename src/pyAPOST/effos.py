@@ -92,13 +92,9 @@ def smo_hilb(APOSTBase, frags=None, gen=False):
 def qij_real(APOSTBase, frags=None, gen=False):
 
 
-    print('DEV:qij_real')
     #Compute molecular orbital overlap matrix. For now using molecular grid
-
-
     mo_grid_a = np.einsum('pa,ai->ip ', APOSTBase.part.ao_eval_grid, APOSTBase.mo_coeff_a)
     mo_grid_b = np.einsum('pa,ai->ip ', APOSTBase.part.ao_eval_grid, APOSTBase.mo_coeff_b)
-
     # Note: Storing molecular overlap matrices is too memory expensive to allocate
     # S_mo_a = np.zeros((mo_grid_a.shape[0], mo_grid_a.shape[0], mo_grid_a.shape[1]))
     # total_elect_int_a = np.sum(np.trace(S_mo_a * APOSTBase.occ_a[:, None, None]) * APOSTBase.part.grid_weights)
@@ -126,8 +122,9 @@ def qij_real(APOSTBase, frags=None, gen=False):
 
     # Get partition weights on the grid points
     # Q_ij: first using molecular orbitals evaluated on the entire grid
-    qij_a = np.zeros((len(APOSTBase.part.frags), APOSTBase.occ_a[APOSTBase.occ_a > 0].shape[0],APOSTBase.occ_a[APOSTBase.occ_a > 0].shape[0]))
-    qij_b = np.zeros((len(APOSTBase.part.frags), APOSTBase.occ_b[APOSTBase.occ_b > 0].shape[0], APOSTBase.occ_b[APOSTBase.occ_b > 0].shape[0]))
+    thresh = 1.0e-8
+    qij_a = np.zeros((len(APOSTBase.part.frags), APOSTBase.occ_a[APOSTBase.occ_a > thresh].shape[0],APOSTBase.occ_a[APOSTBase.occ_a > thresh].shape[0]))
+    qij_b = np.zeros((len(APOSTBase.part.frags), APOSTBase.occ_b[APOSTBase.occ_b > thresh].shape[0], APOSTBase.occ_b[APOSTBase.occ_b > thresh].shape[0]))
     pop_a_all = []
     pop_b_all = []
     # todo: loop over lower triangle only
@@ -148,21 +145,21 @@ def qij_real(APOSTBase, frags=None, gen=False):
             logger.debug(f' ALPHA POPULATION Frag {ifrag+1} : {pop_a :.4f}')
             logger.debug(f' BETA POPULATION Frag {ifrag + 1} : {pop_b :.4f}')
             logger.debug(f' TOTAL POPULATION Frag {ifrag + 1} : {pop_a + pop_b :.4f}\n')
-        for i in range(APOSTBase.occ_a[APOSTBase.occ_a > 0].shape[0]):
-            for j in range(APOSTBase.occ_a[APOSTBase.occ_a > 0].shape[0]):
+        for i in range(APOSTBase.occ_a[APOSTBase.occ_a > thresh].shape[0]):
+            for j in range(APOSTBase.occ_a[APOSTBase.occ_a > thresh].shape[0]):
                 ij_a = mo_grid_a[i, :] * mo_grid_a[j, :] * (tmp_w**2) * APOSTBase.part._grid.quadrature_weights # Do we need to multiply by the occupations?
                 qij_a[ifrag, i, j] = np.sum(ij_a)
-        for i in range(APOSTBase.occ_b[APOSTBase.occ_b > 0].shape[0]):
-            for j in range(APOSTBase.occ_b[APOSTBase.occ_b > 0].shape[0]):
+        for i in range(APOSTBase.occ_b[APOSTBase.occ_b > thresh].shape[0]):
+            for j in range(APOSTBase.occ_b[APOSTBase.occ_b > thresh].shape[0]):
                 ij_b = mo_grid_b[i, :] * mo_grid_b[j, :] * (tmp_w**2) * APOSTBase.part._grid.quadrature_weights
                 qij_b[ifrag, i, j] = np.sum(ij_b)
 
 
     # todo: return always alpha/beta (paired/unpaired) qij.
     # Each qij has the same dimensions as smo
-    print('DEBUG POP A', sum(pop_a_all))
-    print('DEBUG POP B', sum(pop_b_all))
-    print(qij_a.shape, qij_b.shape)
+    logger.debug(f'  SUM POP A = {sum(pop_a_all): .6f}')
+    logger.debug(f'  SUM POP B = {sum(pop_b_all) : .6f}')
+
     return qij_a, qij_b
 
 
@@ -177,7 +174,6 @@ def effos_occ(smo1, nelect1, smo2, nelect2, frags=None, gen=False):
     # for alpha/beta effos occupations we only need to get the usuall ocupations
     # for generalized we need to iterate and check the RMSD for different number of occupations
 
-    print('DEV: check effos occ for rpart becke')
     # Check nelect1,nelect2 type
     if not (isinstance(nelect1, int) and isinstance(nelect2, int)):
         raise TypeError("Either nelect1 or nelect2 must be an integer")
@@ -238,8 +234,8 @@ def effos_occ(smo1, nelect1, smo2, nelect2, frags=None, gen=False):
     frag_occs_2 = [occs_2[:nelect2].count(index) for index in range(len(frags))]
 
     # Molecule LO/FU
-    lo_1 = nelect1 - 1  # Python index
-    lo_2 = nelect2 - 1  # Python index
+    # lo_1 = nelect1 - 1  # Python index
+    # lo_2 = nelect2 - 1  # Python index
     # fu_1 = nelect1  # Python index
 
     frag_effo_occ_1 = s1[:nelect1]
@@ -557,7 +553,8 @@ def EOS_calc(APOSTBase, gen=False, vis=None, log='info'):
     logger.info("")
     logger.info('  Effective oxidation calculation  ')
     logger.info('  Information ')
-    if np.array(frags).shape[0] < APOSTBase.natm:
+
+    if len(frags)  < APOSTBase.natm:
         logger.info(f'  Fragments: {len(APOSTBase.part.frags)} ')
         for idx, f1 in enumerate(APOSTBase.part.frags):
             logger.info(f'  Fragment {idx}: Atoms {f1}, Total charge {APOSTBase.part.zfrags[idx]} ')
@@ -625,10 +622,6 @@ def EOS_calc(APOSTBase, gen=False, vis=None, log='info'):
     if gen:
         os = np.array(APOSTBase.part.zfrags) - 2*np.array(frag_occs_1) - np.array(frag_occs_2)
     else:
-        print('DEBUG OS ', np.array(frag_occs_1))
-        print('DEBUG OS ', np.array(frag_occs_2))
-        print('DEBUG OS ', np.array(APOSTBase.part.zfrags),  np.array(frag_occs_1), np.array(frag_occs_2))
-
         os = np.array(APOSTBase.part.zfrags) - np.array(frag_occs_1) - np.array(frag_occs_2)
 
     logger.debug("  PRINTING OCCUPATIONS")
