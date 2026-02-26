@@ -14,6 +14,12 @@ from pyscf.dft.gen_grid import Grids, get_partition, gen_atomic_grids, radi
 from pyAPOST.part_schemes import becke_w, tfvc_apost_w
 
 
+import logging
+
+logging.basicConfig(level=logging.INFO)
+
+logger = logging.getLogger()
+
 # INFO: PySCF works with NPArrayWithTag from its own library
 
 # TODO: Use attr library to lock the value of attributes once they are initialized after a new object.
@@ -36,6 +42,9 @@ class APOSTBase(object):
 
         #DEV:saving mol
         APOSTBase._mol = mol
+
+        logger.info("  INITIALIZING APOSTBase object for Hilbert and Real space analysis")
+        logger.info("\n\n")
 
         # Molecule basic information from mol object
         self._natm = mol.natm
@@ -69,6 +78,7 @@ class APOSTBase(object):
         # initializing flags
         self._unrestr = False
         self._sd = False
+        self._dft = False
         self._casscf = False
         self._ccsd = False
 
@@ -82,6 +92,8 @@ class APOSTBase(object):
             self._occ_b = calc.mo_occ
             self._dm_a = calc.make_rdm1()
             self._dm_b = calc.make_rdm1()
+            if self._kind_calc in ["RKS", "UKS", "KS", "dftd3"]:
+                self._dft = True
             # Check unrestricted
             if any([i in self._kind_calc for i in ["UHF", "UKS"]]):
                 self._unrestr = True
@@ -151,11 +163,25 @@ class APOSTBase(object):
                 self._occ_a = occ
                 self._occ_b = occ
 
+        # Print Calc info
+        logger.info(f'  Calc INFORMATION')
+        if self._sd:
+            logger.info(f'  Single Determinant : {self._sd}')
+        else:
+            if self._ccsd:
+                logger.info(f'  Post-Hartree Fock CCSD' )
+            elif self._casscf:
+                logger.info(f'  Post-Hartree Fock CASSCF')
+        logger.info(f'  Unrestricted : {self._unrestr}')
+        logger.info(f'  DFT : {self._dft}\n')
+
+
         # Initialize Hpart or Rpart
         if part_name in ["mulliken", "lowdin", "meta_lowdin", "iao", "nao"]:
             self._part = Hpart(part_name, mol, frags=frags)
         elif part_name in ["becke", 'tfvc']:
-            self._part = Rpart(part_name, mol,(self._dm_a, self._dm_b),self._atnums, frags=frags)
+            dm = self._dm_a + self._dm_b
+            self._part = Rpart(part_name, mol, dm, self._atnums, frags=frags)
         else:
             raise ValueError("Could not identify partition. Choose from: Mulliken,Lowdin,Meta-Lowdin,IAO,NAO")
 
@@ -174,6 +200,9 @@ class APOSTBase(object):
     @property
     def sd(self):
         return self._sd
+    @property
+    def dft(self):
+        return self._dft
     @property
     def part(self):
         return self._part
@@ -265,10 +294,9 @@ class Rpart(object):
     # todo: Allow to specify radial and angular points. in that case a dic is created to pass to atom_grid attribute before building the grid
     # todo: allow to specify radii type, radii method and empirical values (Bragg/Trehluer), and prune
     def __init__(self, part_name, mol, dm, atnums, frags=None, sort_grids=False, atom_grid_specs=None):
-        print('DEV: Rpart')
-        print(part_name)
+
         self._part_name = part_name
-        dm_a, dm_b = dm
+        logger.info(f'  Initializing Rpart : {part_name.upper()} \n')
 
 
         # If frags are None then it computes it for atoms
@@ -320,7 +348,7 @@ class Rpart(object):
             self._aim_w = becke_w(self._coords, mol.atom_coords(), atnums, self._grid_to_atom_idx)
         elif part_name == 'tfvc':
             # self._aim_w = tfvc_w(mol, dm_a, self._coords, mol.atom_coords(), atnums, self._grid_to_atom_idx)
-            self._aim_w = tfvc_apost_w(mol, dm_a, self._coords, mol.atom_coords(), atnums, self._grid_to_atom_idx)
+            self._aim_w = tfvc_apost_w(mol, dm, self._coords, mol.atom_coords(), atnums, self._grid_to_atom_idx)
         else:
             raise NotImplementedError(f"Unknown part name: {part_name}")
         # Store computed atomic orbitals in a grid
@@ -363,12 +391,15 @@ class Hpart(object):
     # Eta, transformation matrix
     # Init could be modified by taking out passing mol and instead all the information that we extract from it
     # this could allow more flexibility
-    def __init__(self, part, mol, frags=None):
+    def __init__(self, part_name, mol, frags=None):
         # DEV: Generate Eta matrices
         # First parse necessary data from Mole object
-        self._part_name = part
+        self._part_name = part_name
         self.num_ao = mol.nao
         self.id_slice_atom = mol.aoslice_by_atom()
+
+        logger.info(f'  Initializing Hpart : {part_name.upper()}')
+
 
 
         # If frags are None then it computes it for atoms
@@ -398,14 +429,14 @@ class Hpart(object):
         self._T = None
         self._T_inv = None
         # Generate transformation matrix if needed by the partition
-        if part == "lowdin":
-            self._T_inv = lo.orth_ao(mol, part, pre_orth_ao=None)
+        if part_name == "lowdin":
+            self._T_inv = lo.orth_ao(mol, part_name, pre_orth_ao=None)
             self._T = np.linalg.inv(self._T_inv)
-        elif part == "meta_lowdin":
-            self._T_inv = lo.orth_ao(mol, part, pre_orth_ao="ANO")
+        elif part_name == "meta_lowdin":
+            self._T_inv = lo.orth_ao(mol, part_name, pre_orth_ao="ANO")
             self._T = np.linalg.inv(self._T_inv)
         elif part == "nao":
-            self._T_inv = lo.nao.nao(mol, part)
+            self._T_inv = lo.nao.nao(mol, part_name)
             self._T = np.linalg.inv(self._T_inv)
 
 
