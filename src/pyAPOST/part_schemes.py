@@ -1,4 +1,8 @@
+import warnings as warnings
+
 import numpy as np
+
+from scipy.signal import argrelmin, argrelmax
 
 from pyscf.data.radii import BRAGG
 from pyscf.lib.parameters import BOHR
@@ -146,16 +150,27 @@ def tfvc_apost_w(mol, dm, grid_cords, atm_coords, atnums, atm_grid_idx, atm_radi
 
                 # Combine coord grids into a radial grid
                 rad_dens_grid = np.column_stack((rad_dens_x, rad_dens_y, rad_dens_z))
-                # In APOST there is a function that if a point is passed it gives you back the density. Here we should call eval_ao/eval_rho
+                # In APOST3d there is a function that if a point is passed it gives you back the density. Here we should call eval_ao/eval_rho
                 # Implemented _eval_dens function to double-check we are using eval_rho correctly
                 radial_dens_ao = eval_ao(mol, rad_dens_grid)
                 radial_dens = eval_rho(mol, radial_dens_ao, dm)
                 # check comparing with calculating ourselves the density
                 check_dens_radial = _eval_dens(mol, dm, rad_dens_grid)
                 assert np.allclose(radial_dens, check_dens_radial)
-                min_value = np.min(radial_dens)
-                min_index = np.argmin(radial_dens)
-                logger.debug(f'Min value/index: {min_value}/{min_index}')
+                # Check min and max
+                n_min_idx = argrelmin(radial_dens, order=1)[0]
+                n_max_idx = argrelmax(radial_dens, order=1)[0]
+                logger.info(f'  Max : {n_max_idx} , Min : {n_min_idx}')
+                if n_min_idx:
+                    if n_max_idx or n_min_idx.shape[0] > 1:
+                        logger.info('  Inconsistent number of extrema')
+                        # Selecting one closest to the midpoint
+                        kc = np.argmin(np.linalg.norm(mpoint_coords[i,j] - rad_dens_grid[n_min_idx], axis=-1))
+                        min_index = n_min_idx[kc]
+                        logger.info(f'  Selecting minimum closest to midpoint : {min_index}')
+                    else:
+                        min_index = n_min_idx[0]
+                        logger.info(f'  Only 1 minima found : {n_min_idx}')
 
                 # Second round of radial dens evaluation
                 # Set up updated start and stop for linspace
@@ -189,7 +204,7 @@ def tfvc_apost_w(mol, dm, grid_cords, atm_coords, atnums, atm_grid_idx, atm_radi
     for i in range(chi.shape[0]-1):
         for j in range(i+1,chi.shape[0]):
             # print(i,j)
-            logger.info(f'Atom pair {i+1} and {j+1} : {chi[i,j] : .4f}')
+            logger.info(f'  Atom pair {i+1} and {j+1} : {chi[i,j] : .4f}')
 
     v_ab = (1 + mu_ab - chi*(1-mu_ab))/(1 + mu_ab + chi*(1-mu_ab))
     # f_k function (same with TFVC)
