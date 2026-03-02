@@ -1,6 +1,7 @@
 import numpy as np
 
 import logging
+import warnings as warnings
 
 from pyAPOST.base import Hpart, Rpart
 
@@ -13,7 +14,7 @@ logging.basicConfig(level=logging.INFO)
 
 logger = logging.getLogger()
 
-def smo_hilb(APOSTBase, frags=None, gen=False):
+def smo_hilb(APOSTBase, gen=False):
     """"Function to return effos and occupations"""
 
     # Generate S_AO_frags
@@ -90,77 +91,176 @@ def smo_hilb(APOSTBase, frags=None, gen=False):
         return Smo_a, Smo_b
 
 def qij_real(APOSTBase, frags=None, gen=False):
+    """Function to construct Q_ij matrix to obtain effos defined in a real space partition
+    …math::
+     Q_{ij} = \int w^{2}_{A}(r)\varphi^{*}_{i}(r)\varphi_{j}(r)dr
 
+    For natural orbitals the occupations are included as:
+    Q_{ij} = \sqrt{n_i} \sqrt{n_j} \int w^{2}_{A}(r)\varphi^{*}_{i}(r)\varphi_{j}(r)dr
 
-    #Compute molecular orbital overlap matrix. For now using molecular grid
-    mo_grid_a = np.einsum('pa,ai->ip ', APOSTBase.part.ao_eval_grid, APOSTBase.mo_coeff_a)
-    mo_grid_b = np.einsum('pa,ai->ip ', APOSTBase.part.ao_eval_grid, APOSTBase.mo_coeff_b)
-    # Note: Storing molecular overlap matrices is too memory expensive to allocate
-    # S_mo_a = np.zeros((mo_grid_a.shape[0], mo_grid_a.shape[0], mo_grid_a.shape[1]))
-    # total_elect_int_a = np.sum(np.trace(S_mo_a * APOSTBase.occ_a[:, None, None]) * APOSTBase.part.grid_weights)
+    Where:
+        \varphi_{i}(r): Molecular or Natural orbital
+        w^{2}_{A}(r): AIM weight for atom A
+        n_{i}: occupation of the i-th natural orbital
 
-    # Check 1: total integrated electrons
-    dens_grid_a = np.zeros((mo_grid_a.shape[1]))
-    dens_grid_b = np.zeros((mo_grid_b.shape[1]))
-    for i in range(mo_grid_a.shape[0]):
+    Parameters:
+    ----------
+    APOSTBase: Object of class APOSTBase
+    gen: Bool
+        Flag to use generalized or standard effos formulation
+
+    Return:
+    ------
+    qij_a, qij_b/ qij_u, qij_p: np.array(Frags, MOs, MOs)
+
+    """
+
+    if gen:
+        # Assign occ and occ_coeff
+        # Todo: change this when both Natural and SCF molecular coefficients are updated
+        thresh = 1.0e-8
+        if APOSTBase._sd and APOSTBase._unrestr:
+            dm = APOSTBase.dm_a + APOSTBase.dm_b
+            occ, occ_coeff = APOSTBase.generate_mo_coeff(dm, overlap=APOSTBase.ovlp)
+
+            occ_coeff = occ_coeff[:, occ > thresh]
+            occ = occ[occ > thresh]
+
+        # Post-Hartree Fock
+        elif APOSTBase._casscf or APOSTBase._ccsd:
+            # In APOSTbase we always generate dm_a and dm_b. For generalized effos original code APOSTpy works with paired Dm by calling
+            # mcscf.addons.make_rdm1() instead of mcscf.addons.make_rdm1s(). Internally PySCF generates Dm returned by mcscf.addons.make_rdm1()
+            # by adding dma and dmb in pyscf/fci/direct_spin1.py def make_rdm1. Here we are adding coefficents
+            occ = APOSTBase.occ_a + APOSTBase.occ_b
+            occ_coeff = APOSTBase.mo_coeff_a + APOSTBase.occ_b
+
+            occ_coeff = occ_coeff[:, occ > thresh]
+            occ = occ[occ > thresh]
+
+        # Last, restricted single determinant. Assign the common variable to alpha coeff. The code below would work the same using beta attributes
+        else:
+            occ_coeff = APOSTBase.mo_coeff_a[:, APOSTBase.occ_a > thresh]
+            occ = APOSTBase.occ_a[APOSTBase.occ_a > thresh]
+
+        # Compute molecular orbital overlap matrix. For now using molecular grid
+        mo_grid = np.einsum('pa,ai->ip ', APOSTBase.part.ao_eval_grid, occ_coeff)
+
+        # Check 1: total integrated electrons
+        dens_grid = np.zeros((mo_grid.shape[1]))
+        for i in range(mo_grid.shape[0]):
+            dens_grid += mo_grid[i, :] * mo_grid[i, :] * occ[i]
+
+        total_elect_int = np.sum(dens_grid * APOSTBase.part.grid_weights)
+
+        logger.info(f'  Check integrated elect: {total_elect_int: .5f}\n')
+
+        qij_p = np.zeros((len(APOSTBase.part.frags), occ.shape[0], occ.shape[0]))
+        qij_u = np.zeros((len(APOSTBase.part.frags), occ.shape[0], occ.shape[0]))
+        pop_all = []
+        for ifrag, frag in enumerate(APOSTBase.part.frags):
+            tmp_w = np.zeros((APOSTBase.part.grid_weights.shape[0]))
+            for ia in frag:
+                # Adding weights for all atoms in the fragment
+                ia = ia-1 # Reverting to python index
+                tmp_w[APOSTBase.part.grid_to_atom_idx == ia] += APOSTBase.part.aim_w[APOSTBase.part.grid_to_atom_idx == ia]
+            pop = np.sum(dens_grid * APOSTBase.part._grid.quadrature_weights * tmp_w)
+            pop_all.append(pop)
+            logger.debug(f' TOTAL POPULATION Frag {ifrag + 1} : {pop :.4f}\n')
+
+            for i in range(occ.shape[0]):
+                for j in range(APOSTBase.occ_a[APOSTBase.occ_a > thresh].shape[0]):
+                    ij_p = mo_grid[i, :] * mo_grid[j, :] * (tmp_w**2) * APOSTBase.part._grid.quadrature_weights
+                    qij_p[ifrag, i, j] = np.sum(ij_p)
+            for i in range(occ.shape[0]):
+                for j in range(occ.shape[0]):
+                    ij_u =  mo_grid[i, :] * mo_grid[j, :] * (tmp_w**2) * APOSTBase.part._grid.quadrature_weights
+                    qij_u[ifrag, i, j] = np.sum(ij_u)
+
+        # Each qij has the same dimensions as smo
+        logger.debug(f'  SUM POP A = {sum(pop_all): .6f}')
+
+        # Normalize Qij_p and Qij_u for post-hartree fock methods and unrestricted SD
+        if APOSTBase._casscf or APOSTBase._ccsd or APOSTBase._unrestr:
+            # outer product
+            norm_occ_p = np.sqrt(abs((occ - 1) * occ))[:, None] * np.sqrt(abs((occ - 1) * occ))[None, :]
+            norm_occ_u = np.sqrt(abs((2 - occ) * occ))[:, None] * np.sqrt(abs((2 - occ) * occ))[None, :]
+
+            qij_p = qij_p * norm_occ_p[None, :, :]
+            qij_u = qij_u * norm_occ_u[None, :, :]
+
+        return qij_p, qij_u
+
+    else:
+        # Compute molecular orbital overlap matrix. For now using molecular grid
+        mo_grid_a = np.einsum('pa,ai->ip ', APOSTBase.part.ao_eval_grid, APOSTBase.mo_coeff_a)
+        mo_grid_b = np.einsum('pa,ai->ip ', APOSTBase.part.ao_eval_grid, APOSTBase.mo_coeff_b)
+        # Note: Storing molecular overlap matrices is too memory expensive to allocate
+        # S_mo_a = np.zeros((mo_grid_a.shape[0], mo_grid_a.shape[0], mo_grid_a.shape[1]))
+        # total_elect_int_a = np.sum(np.trace(S_mo_a * APOSTBase.occ_a[:, None, None]) * APOSTBase.part.grid_weights)
+
+        # Check 1: total integrated electrons
+        dens_grid_a = np.zeros((mo_grid_a.shape[1]))
+        dens_grid_b = np.zeros((mo_grid_b.shape[1]))
+        for i in range(mo_grid_a.shape[0]):
             dens_grid_a += mo_grid_a[i, :] * mo_grid_a[i, :] * APOSTBase.occ_a[i]
             dens_grid_b += mo_grid_b[i, :] * mo_grid_b[i, :] * APOSTBase.occ_b[i]
 
-    total_elect_int_a = np.sum(dens_grid_a * APOSTBase.part.grid_weights)
-    total_elect_int_b = np.sum(dens_grid_b * APOSTBase.part.grid_weights)
+        total_elect_int_a = np.sum(dens_grid_a * APOSTBase.part.grid_weights)
+        total_elect_int_b = np.sum(dens_grid_b * APOSTBase.part.grid_weights)
 
-    if APOSTBase.sd and not APOSTBase.unrestr:
-        logger.info(f'Check integrated elect: {total_elect_int_a: .5f}\n')
-    else:
-        logger.info(f'Check integrated elect alpha: {total_elect_int_a: .5f}')
-        logger.info(f'Check integrated elect beta: {total_elect_int_b: .5f}\n')
-    # todo: implement qij paired/unpaired
-    # more integrated electrons tests
-    # t2 = np.sum(np.trace(S_mo_a * APOSTBase.occ_a[:, None, None]) * APOSTBase.part._grid.quadrature_weights * APOSTBase.part.aim_w)
-    # print(t2)
-
-
-    # Get partition weights on the grid points
-    # Q_ij: first using molecular orbitals evaluated on the entire grid
-    thresh = 1.0e-8
-    qij_a = np.zeros((len(APOSTBase.part.frags), APOSTBase.occ_a[APOSTBase.occ_a > thresh].shape[0],APOSTBase.occ_a[APOSTBase.occ_a > thresh].shape[0]))
-    qij_b = np.zeros((len(APOSTBase.part.frags), APOSTBase.occ_b[APOSTBase.occ_b > thresh].shape[0], APOSTBase.occ_b[APOSTBase.occ_b > thresh].shape[0]))
-    pop_a_all = []
-    pop_b_all = []
-    # todo: loop over lower triangle only
-    # todo: redo because we can't store S_mo_a/S_mo_b anymore due to large memory allocation for big basis/grid
-    for ifrag, frag in enumerate(APOSTBase.part.frags):
-        tmp_w = np.zeros((APOSTBase.part.grid_weights.shape[0]))
-        for ia in frag:
-            # Adding weights for all atoms in the fragment
-            ia = ia-1 # Reverting to python index
-            tmp_w[APOSTBase.part.grid_to_atom_idx == ia] += APOSTBase.part.aim_w[APOSTBase.part.grid_to_atom_idx == ia]
-        pop_a = np.sum(dens_grid_a * APOSTBase.part._grid.quadrature_weights * tmp_w)
-        pop_b = np.sum(dens_grid_b * APOSTBase.part._grid.quadrature_weights * tmp_w)
-        pop_a_all.append(pop_a)
-        pop_b_all.append(pop_b)
-        if APOSTBase._sd and not APOSTBase.unrestr:
-            logger.debug(f' TOTAL POPULATION Frag {ifrag + 1} : {pop_a :.4f}\n')
+        if APOSTBase.sd and not APOSTBase.unrestr:
+            logger.info(f'Check integrated elect: {total_elect_int_a: .5f}\n')
         else:
-            logger.debug(f' ALPHA POPULATION Frag {ifrag+1} : {pop_a :.4f}')
-            logger.debug(f' BETA POPULATION Frag {ifrag + 1} : {pop_b :.4f}')
-            logger.debug(f' TOTAL POPULATION Frag {ifrag + 1} : {pop_a + pop_b :.4f}\n')
-        for i in range(APOSTBase.occ_a[APOSTBase.occ_a > thresh].shape[0]):
-            for j in range(APOSTBase.occ_a[APOSTBase.occ_a > thresh].shape[0]):
-                ij_a = mo_grid_a[i, :] * mo_grid_a[j, :] * (tmp_w**2) * APOSTBase.part._grid.quadrature_weights # Do we need to multiply by the occupations?
-                qij_a[ifrag, i, j] = np.sum(ij_a)
-        for i in range(APOSTBase.occ_b[APOSTBase.occ_b > thresh].shape[0]):
-            for j in range(APOSTBase.occ_b[APOSTBase.occ_b > thresh].shape[0]):
-                ij_b = mo_grid_b[i, :] * mo_grid_b[j, :] * (tmp_w**2) * APOSTBase.part._grid.quadrature_weights
-                qij_b[ifrag, i, j] = np.sum(ij_b)
+            logger.info(f'Check integrated elect alpha: {total_elect_int_a: .5f}')
+            logger.info(f'Check integrated elect beta: {total_elect_int_b: .5f}\n')
+
+        thresh = 1.0e-8
+        qij_a = np.zeros((len(APOSTBase.part.frags), APOSTBase.occ_a[APOSTBase.occ_a > thresh].shape[0],APOSTBase.occ_a[APOSTBase.occ_a > thresh].shape[0]))
+        qij_b = np.zeros((len(APOSTBase.part.frags), APOSTBase.occ_b[APOSTBase.occ_b > thresh].shape[0], APOSTBase.occ_b[APOSTBase.occ_b > thresh].shape[0]))
+        pop_a_all = []
+        pop_b_all = []
+        # todo: loop over lower triangle only
+        # todo: Code below same for generalized. Try to only have one
+        for ifrag, frag in enumerate(APOSTBase.part.frags):
+            tmp_w = np.zeros((APOSTBase.part.grid_weights.shape[0]))
+            for ia in frag:
+                # Adding weights for all atoms in the fragment
+                ia = ia-1 # Reverting to python index
+                tmp_w[APOSTBase.part.grid_to_atom_idx == ia] += APOSTBase.part.aim_w[APOSTBase.part.grid_to_atom_idx == ia]
+            pop_a = np.sum(dens_grid_a * APOSTBase.part._grid.quadrature_weights * tmp_w)
+            pop_b = np.sum(dens_grid_b * APOSTBase.part._grid.quadrature_weights * tmp_w)
+            pop_a_all.append(pop_a)
+            pop_b_all.append(pop_b)
+
+            if APOSTBase._sd and not APOSTBase.unrestr:
+                logger.debug(f' TOTAL POPULATION Frag {ifrag + 1} : {pop_a :.4f}\n')
+            else:
+                logger.debug(f' ALPHA POPULATION Frag {ifrag+1} : {pop_a :.4f}')
+                logger.debug(f' BETA POPULATION Frag {ifrag + 1} : {pop_b :.4f}')
+                logger.debug(f' TOTAL POPULATION Frag {ifrag + 1} : {pop_a + pop_b :.4f}\n')
+            for i in range(APOSTBase.occ_a[APOSTBase.occ_a > thresh].shape[0]):
+                for j in range(APOSTBase.occ_a[APOSTBase.occ_a > thresh].shape[0]):
+                    ij_a = mo_grid_a[i, :] * mo_grid_a[j, :] * (tmp_w**2) * APOSTBase.part._grid.quadrature_weights
+                    qij_a[ifrag, i, j] = np.sum(ij_a)
+            for i in range(APOSTBase.occ_b[APOSTBase.occ_b > thresh].shape[0]):
+                for j in range(APOSTBase.occ_b[APOSTBase.occ_b > thresh].shape[0]):
+                    ij_b = mo_grid_b[i, :] * mo_grid_b[j, :] * (tmp_w**2) * APOSTBase.part._grid.quadrature_weights
+                    qij_b[ifrag, i, j] = np.sum(ij_b)
+
+            if APOSTBase._casscf or APOSTBase._ccsd:
+                norm_occ_a = np.sqrt(APOSTBase.occ_a[APOSTBase.occ_a > thresh])[:, None] * np.sqrt(APOSTBase.occ_a[APOSTBase.occ_a > thresh])[None, :]
+                norm_occ_b = np.sqrt(APOSTBase.occ_b[APOSTBase.occ_b > thresh])[:, None] * np.sqrt(APOSTBase.occ_b[APOSTBase.occ_b > thresh])[None, :]
+
+                qij_a = qij_a * norm_occ_a[None, :, :]
+                qij_b = qij_b * norm_occ_b[None, :, :]
 
 
-    # todo: return always alpha/beta (paired/unpaired) qij.
-    # Each qij has the same dimensions as smo
-    logger.debug(f'  SUM POP A = {sum(pop_a_all): .6f}')
-    logger.debug(f'  SUM POP B = {sum(pop_b_all) : .6f}')
+        # todo: return always alpha/beta (paired/unpaired) qij.
+        # Each qij has the same dimensions as smo
+        logger.debug(f'  SUM POP A = {sum(pop_a_all): .6f}')
+        logger.debug(f'  SUM POP B = {sum(pop_b_all) : .6f}')
 
-    return qij_a, qij_b
+        return qij_a, qij_b
 
 
 def effos_occ(smo1, nelect1, smo2, nelect2, frags=None, gen=False):
