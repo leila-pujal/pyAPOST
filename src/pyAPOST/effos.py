@@ -90,7 +90,7 @@ def smo_hilb(APOSTBase, gen=False):
 
         return Smo_a, Smo_b
 
-def qij_real(APOSTBase, frags=None, gen=False):
+def qij_real(APOSTBase, gen=False):
     """Function to construct Q_ij matrix to obtain effos defined in a real space partition
     …math::
      Q_{ij} = \int w^{2}_{A}(r)\varphi^{*}_{i}(r)\varphi_{j}(r)dr
@@ -271,7 +271,43 @@ def effos_occ(smo1, nelect1, smo2, nelect2, frags=None, gen=False):
 
     """
 
-    # for alpha/beta effos occupations we only need to get the usuall ocupations
+    def _compute_rmsd(eig_1, eig_2, n1, n2, gen=False):
+        """Auxiliary function to compute the Root Mean Squared Error of effos occupations.
+
+        Parameters:
+        -----------
+            eig_1: List
+                Ordered list of effos eigenvalues for alpha or paired
+            eig_2: List
+                Ordered list of effos eigenvalues for beta or unpaired
+            n1: Int
+                alpha/paired electrons
+            n2: Int
+                beta/unpaired electrons
+            gen: Bool
+                Flag to use Generalized or standard effos formalism
+
+        Returns:
+        --------
+            RMSD: Float
+                Root Mean Squared Error between eigenvalues and theoretical occupations
+        """
+
+        effos_occ = np.zeros((len(eig_1) + len(eig_2)))
+        if gen:
+            effos_occ[:n1] = 2
+            effos_occ[len(eig_1): len(eig_1) + n2] = 1
+            complete_effos = np.concatenate((eig_1, eig_2))
+        else:
+            effos_occ[:n1] = 1
+            effos_occ[len(eig_1): len(eig_1) + n2] = 1
+            complete_effos = np.concatenate((eig_1, eig_2))
+
+        rmsd_1 = (complete_effos - effos_occ) ** 2
+        rmsd = np.sqrt(np.mean(rmsd_1))
+        return rmsd
+
+    # for alpha/beta effos occupations we only need to get the usual ocupations
     # for generalized we need to iterate and check the RMSD for different number of occupations
 
     # Check nelect1,nelect2 type
@@ -296,22 +332,21 @@ def effos_occ(smo1, nelect1, smo2, nelect2, frags=None, gen=False):
     effos_data = {'dens1': {}, 'dens2': {}}
 
     # Compute eigenvec/eigenval
-    print('smo', smo1.shape)
     s1_egval, s1_egvec = np.linalg.eigh(smo1)
     s2_egval, s2_egvec = np.linalg.eigh(smo2)
-    print('shape eigval', s1_egval.shape, s2_egval.shape)
     s1_egval, s1_egvec = s1_egval[:, ::-1], s1_egvec[:, :, ::-1]
     s2_egval, s2_egvec = s2_egval[:, ::-1], s2_egvec[:, :, ::-1]
-    print('shape eigval', s1_egval.shape, s2_egval.shape)
 
     # Avoid division by 0
     s1_egvec[s1_egvec == 0] = 1e-10
     s2_egvec[s2_egvec == 0] = 1e-10
 
     #Normalize eigenvectors
-    s1_egvec = s1_egvec / np.sqrt(s1_egval[:, None, :])
-    s2_egvec = s2_egvec / np.sqrt(s2_egval[:, None, :])
-    print('shape eigval', s1_egval.shape, s2_egval.shape)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        s1_egvec = s1_egvec / np.sqrt(s1_egval[:, None, :])
+        s2_egvec = s2_egvec / np.sqrt(s2_egval[:, None, :])
+    # print('shape eigval', s1_egval.shape, s2_egval.shape)
 
     effos_data['dens1']['egvec'] = s1_egvec
     effos_data['dens2']['egvec'] = s2_egvec
@@ -327,8 +362,37 @@ def effos_occ(smo1, nelect1, smo2, nelect2, frags=None, gen=False):
     effos_data['dens2']['s2'] = s2
 
     # Unzip the tuple items into two list to have ordered fragment indices. Equivalent to occs_1 = [eigval[1] for eigval in s1]
-    _, occs_1 = zip(*s1)
-    _, occs_2 = zip(*s2)
+    eig_1, occs_1 = zip(*s1)
+    eig_2, occs_2 = zip(*s2)
+
+    # RMSD assignation:
+    logger.info('  RMSD ASSIGNATION CHECK \n')
+    n1 = nelect1
+    n2 = nelect2
+    if gen:
+        logger.info(f"  INITIAL ASSIGNATION:  {n1} PAIRED AND {n2} UNPAIRED")
+    else:
+        logger.info(f"  INITIAL ASSIGNATION:  {n1} ALPHA AND {n2} BETA")
+    rmsd = _compute_rmsd(eig_1, eig_2, n1, n2, gen=gen)
+    logger.info(f'  RMSD: {rmsd: .4f} \n')
+    # Now we check RMSD splitting 2 Paired electrons into unpaired ones
+    it = 0
+    if n1 == nelect1 and n2 == nelect2 and gen:
+        while True:
+            it += 1
+            n1 -= 1
+            n2 += 2
+            logger.info(f"{it} ITERATION: {n1} PAIRED AND {n2} UNPAIRED ")
+            rmsd_alt = _compute_rmsd(eig_1, eig_2, n1, n2, gen=gen)
+            logger.info(f'  RMSD: {rmsd_alt: .4f} \n')
+            if rmsd_alt > rmsd:
+                break
+            else:
+                rmsd = rmsd_alt
+                nelect1 = n1
+                nelect2 = n2
+
+    logger.info(f"  FINAL RMSD ASSIGNATION : {nelect1} PAIRED AND {nelect2} UNPAIRED and RMSD = {rmsd: .4f} \n")
 
     frag_occs_1 = [occs_1[:nelect1].count(index) for index in range(len(frags))]
     frag_occs_2 = [occs_2[:nelect2].count(index) for index in range(len(frags))]
@@ -417,22 +481,24 @@ def effos_occ(smo1, nelect1, smo2, nelect2, frags=None, gen=False):
         else:
             frags_effo_occ_2 = [None]*len(frags)
 
+    # Compute reliability index
+    lo_1 = nelect1 - 1 # Python index
+    fu_1 = nelect1 # Python index
+
+    lo_2 = nelect2 - 1  # Python index
+    fu_2 = nelect2  # Python index
+
+    r1 = 100 * min(1, s1[lo_1][0] - s1[fu_1][0] + 0.5)
+    r2 = 100 * min(1, s2[lo_2][0] - s2[fu_2][0] + 0.5)
+
     if gen:
-        print("RMSD based assignation. Not implemented yet")
+        logger.info(f'  Reliability index for Paired : {r1: .4f}')
+        logger.info(f'  Reliability index for Unpaired : {r2: .4f}')
     else:
-        # Compute reliability index
-        lo_1 = nelect1 - 1 # Python index
-        fu_1 = nelect1 # Python index
+        logger.info(f'  Reliability index for Alpha : {r1: .4f}')
+        logger.info(f'  Reliability index for Beta : {r2: .4f}')
 
-        lo_2 = nelect2 - 1  # Python index
-        fu_2 = nelect2  # Python index
 
-        r1 = 100 * min(1, s1[lo_1][0] - s1[fu_1][0] + 0.5)
-        r2 = 100 * min(1, s2[lo_2][0] - s2[fu_2][0] + 0.5)
-        # print('r1', r1)
-        # print('r2', r2)
-
-        # RMSD
 
     effos_data['dens1']['frag_occs_1'] = frag_occs_1
     effos_data['dens2']['frag_occs_2'] = frag_occs_2
