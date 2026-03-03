@@ -11,7 +11,7 @@ from pyscf.dft.numint import eval_ao
 from pyscf.dft.gen_grid import Grids, get_partition, gen_atomic_grids, radi
 
 
-from pyAPOST.part_schemes import becke_w, tfvc_apost_w
+from pyAPOST.part_schemes import becke_w, tfvc_w
 
 
 import logging
@@ -92,7 +92,7 @@ class APOSTBase(object):
             self._occ_b = calc.mo_occ
             self._dm_a = calc.make_rdm1()
             self._dm_b = calc.make_rdm1()
-            if self._kind_calc in ["RKS", "UKS", "KS", "dftd3"]:
+            if any([i in self._kind_calc for i in ["RKS", "UKS", "KS", "dftd3"]]):
                 self._dft = True
             # Check unrestricted
             if any([i in self._kind_calc for i in ["UHF", "UKS"]]):
@@ -293,6 +293,8 @@ class Rpart(object):
     # Optional: allow to pass coords and weights bypassing relying on the PySCF Grids
     # todo: Allow to specify radial and angular points. in that case a dic is created to pass to atom_grid attribute before building the grid
     # todo: allow to specify radii type, radii method and empirical values (Bragg/Trehluer), and prune
+
+    # todo: allow for atomic grid specifications to pass to pyscf gen_grids
     def __init__(self, part_name, mol, dm, atnums, frags=None, sort_grids=False, atom_grid_specs=None):
 
         self._part_name = part_name
@@ -347,8 +349,7 @@ class Rpart(object):
         if part_name == 'becke':
             self._aim_w = becke_w(self._coords, mol.atom_coords(), atnums, self._grid_to_atom_idx)
         elif part_name == 'tfvc':
-            # self._aim_w = tfvc_w(mol, dm_a, self._coords, mol.atom_coords(), atnums, self._grid_to_atom_idx)
-            self._aim_w = tfvc_apost_w(mol, dm, self._coords, mol.atom_coords(), atnums, self._grid_to_atom_idx)
+            self._aim_w = tfvc_w(mol, dm, self._coords, mol.atom_coords(), atnums, self._grid_to_atom_idx)
         else:
             raise NotImplementedError(f"Unknown part name: {part_name}")
         # Store computed atomic orbitals in a grid
@@ -435,7 +436,7 @@ class Hpart(object):
         elif part_name == "meta_lowdin":
             self._T_inv = lo.orth_ao(mol, part_name, pre_orth_ao="ANO")
             self._T = np.linalg.inv(self._T_inv)
-        elif part == "nao":
+        elif part_name == "nao":
             self._T_inv = lo.nao.nao(mol, part_name)
             self._T = np.linalg.inv(self._T_inv)
 
