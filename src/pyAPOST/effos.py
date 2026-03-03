@@ -209,10 +209,10 @@ def qij_real(APOSTBase, gen=False):
         total_elect_int_b = np.sum(dens_grid_b * APOSTBase.part.grid_weights)
 
         if APOSTBase.sd and not APOSTBase.unrestr:
-            logger.info(f'Check integrated elect: {total_elect_int_a: .5f}\n')
+            logger.info(f'  Check integrated elect: {total_elect_int_a: .5f}\n')
         else:
-            logger.info(f'Check integrated elect alpha: {total_elect_int_a: .5f}')
-            logger.info(f'Check integrated elect beta: {total_elect_int_b: .5f}\n')
+            logger.info(f'  Check integrated elect alpha: {total_elect_int_a: .5f}')
+            logger.info(f'  Check integrated elect beta: {total_elect_int_b: .5f}\n')
 
         thresh = 1.0e-8
         qij_a = np.zeros((len(APOSTBase.part.frags), APOSTBase.occ_a[APOSTBase.occ_a > thresh].shape[0],APOSTBase.occ_a[APOSTBase.occ_a > thresh].shape[0]))
@@ -233,11 +233,11 @@ def qij_real(APOSTBase, gen=False):
             pop_b_all.append(pop_b)
 
             if APOSTBase._sd and not APOSTBase.unrestr:
-                logger.debug(f' TOTAL POPULATION Frag {ifrag + 1} : {pop_a :.4f}\n')
+                logger.debug(f'  TOTAL POPULATION Frag {ifrag + 1} : {pop_a :.4f}\n')
             else:
-                logger.debug(f' ALPHA POPULATION Frag {ifrag+1} : {pop_a :.4f}')
-                logger.debug(f' BETA POPULATION Frag {ifrag + 1} : {pop_b :.4f}')
-                logger.debug(f' TOTAL POPULATION Frag {ifrag + 1} : {pop_a + pop_b :.4f}\n')
+                logger.debug(f'  ALPHA POPULATION Frag {ifrag+1} : {pop_a :.4f}')
+                logger.debug(f'  BETA POPULATION Frag {ifrag + 1} : {pop_b :.4f}')
+                logger.debug(f'  TOTAL POPULATION Frag {ifrag + 1} : {pop_a + pop_b :.4f}\n')
             for i in range(APOSTBase.occ_a[APOSTBase.occ_a > thresh].shape[0]):
                 for j in range(APOSTBase.occ_a[APOSTBase.occ_a > thresh].shape[0]):
                     ij_a = mo_grid_a[i, :] * mo_grid_a[j, :] * (tmp_w**2) * APOSTBase.part._grid.quadrature_weights
@@ -397,17 +397,78 @@ def effos_occ(smo1, nelect1, smo2, nelect2, frags=None, gen=False):
     frag_occs_1 = [occs_1[:nelect1].count(index) for index in range(len(frags))]
     frag_occs_2 = [occs_2[:nelect2].count(index) for index in range(len(frags))]
 
-    # Molecule LO/FU
-    # lo_1 = nelect1 - 1  # Python index
-    # lo_2 = nelect2 - 1  # Python index
-    # fu_1 = nelect1  # Python index
-
     frag_effo_occ_1 = s1[:nelect1]
     frag_effo_occ_2 = s2[:nelect2]
 
     frag_effo_unocc_1 = s1[nelect1:]
     frag_effo_unocc_2 = s2[nelect2:]
 
+    lo_1 = nelect1 - 1  # Python index
+    fu_1 = nelect1  # Python index
+
+    lo_2 = nelect2 - 1  # Python index
+    fu_2 = nelect2  # Python index
+
+    # Check if pseudodegenerate effos
+    # Note rounding the values to use count
+    eig_1_r = [round(egv, 5) for egv in eig_1]
+    eig_2_r = [round(egv, 5) for egv in eig_2]
+    # Checking if the last assignation corresponds to a degenerate atomic orbital
+    # Todo: Check if we could condense the two if statements
+    if eig_1_r.index(eig_1_r[nelect1]) > 1:
+        logger.info('  EOS: Warning, pseudo-degeneracies detected for Alpha/Paired effos')
+        deg_idx_1 = np.array([i for i, x in enumerate(eig_1_r) if x == eig_1_r[nelect1]])
+        frac_1 = np.sum(deg_idx_1 <= nelect1-1) / deg_idx_1.size
+        logger.info(f'  Distributing {np.sum(deg_idx_1 <= nelect1-1)} electrons over {deg_idx_1.size} pseudodegenerate atomic orbital')
+        logger.debug(f'  Frac occupation: {frac_1: .3f} \n')
+        # Update occupation for degenerate orbitals
+        sub_e_1 = np.zeros(len(frags))
+        add_e_1 = np.zeros(len(frags))
+        for i in deg_idx_1:
+            add_e_1[occs_1[i]] += frac_1
+            if i < nelect1:
+                sub_e_1[occs_1[i]] += 1
+        frag_occs_1 -= sub_e_1
+        frag_occs_1 += add_e_1
+
+        # Update with new occupations
+        diff_1 = deg_idx_1.size - np.sum(deg_idx_1 <= nelect1-1)
+
+        frag_effo_occ_1 = s1[:nelect1 + diff_1]
+        frag_effo_unocc_1 = s1[nelect1 + diff_1:]
+
+        lo_1 = (nelect1 + diff_1) - 1  # Python index
+        fu_1 = nelect1 + diff_1  # Python index
+
+    if eig_2_r.index(eig_2_r[nelect2]) > 1:
+        logger.info('  EOS: Warning, pseudo-degeneracies detected for Beta/Unpaired effos')
+        deg_idx_2 = np.array([i for i, x in enumerate(eig_2_r) if x == eig_2_r[nelect2]])
+        frac_2 = np.sum(deg_idx_2 <= nelect2 - 1) / deg_idx_2.size
+        logger.info(f'  Distributing {np.sum(deg_idx_2 <= nelect2 - 1)} electrons over {deg_idx_2.size} pseudodegenerate atomic orbital')
+        logger.debug(f'  Frac occupation: {frac_2: .4f} \n')
+        # Update occupation for degenerate orbitals
+        sub_e_2 = np.zeros(len(frags))
+        add_e_2 = np.zeros(len(frags))
+        for i in deg_idx_2:
+            add_e_2[occs_2[i]] += frac_2
+            if i < nelect2:
+                sub_e_2[occs_2[i]] += 1
+        frag_occs_2 -= sub_e_2
+        frag_occs_2 += add_e_2
+
+        # Update with new occupations
+        diff_2 = deg_idx_2.size - np.sum(deg_idx_2 <= nelect2 - 1)
+
+        frag_effo_occ_2 = s1[:nelect2 + diff_2]
+        frag_effo_unocc_2 = s1[nelect2 + diff_2:]
+
+        lo_2 = (nelect2 + diff_2) - 1  # Python index
+        fu_2 =  (nelect2 + diff_2)  # Python index
+
+    # Molecule LO/FU
+    # lo_1 = nelect1 - 1  # Python index
+    # lo_2 = nelect2 - 1  # Python index
+    # fu_1 = nelect1  # Python index
 
     effos_data['dens1']['frags_effo_occ_1'] = frag_effo_occ_1
     effos_data['dens2']['frags_effo_occ_2'] = frag_effo_occ_2
@@ -481,12 +542,7 @@ def effos_occ(smo1, nelect1, smo2, nelect2, frags=None, gen=False):
         else:
             frags_effo_occ_2 = [None]*len(frags)
 
-    # Compute reliability index
-    lo_1 = nelect1 - 1 # Python index
-    fu_1 = nelect1 # Python index
 
-    lo_2 = nelect2 - 1  # Python index
-    fu_2 = nelect2  # Python index
 
     r1 = 100 * min(1, s1[lo_1][0] - s1[fu_1][0] + 0.5)
     r2 = 100 * min(1, s2[lo_2][0] - s2[fu_2][0] + 0.5)
@@ -728,7 +784,7 @@ def EOS_calc(APOSTBase, gen=False, vis=None, log='info'):
         logger.info(f'  Atomic EOS ')
 
     logger.info("")
-    logger.info(f'  AIM Definition: {APOSTBase.part.part_name}')
+    logger.info(f'  AIM Definition: {APOSTBase.part.part_name.upper()}')
 
     logger.info(f"  Doing generalized EOS: {gen}")
 
@@ -763,9 +819,6 @@ def EOS_calc(APOSTBase, gen=False, vis=None, log='info'):
         nel1 = APOSTBase.alpha_elec
         nel2 = APOSTBase.beta_elec
 
-    # todo: missing values rmsd (of all iterations?) and reliability index
-    # s1_egval, s1_egvec, frag_occs_1, s1, frag_lo_1,frag_fu_1, s2_egval, s2_egvec, frag_occs_2, s2, frag_lo_2, frag_fu_2
-    # s1_egval, s1_egvec, frag_occs_1, s1, frag_lo_1, frag_fu_1, s2_egval, s2_egvec, frag_occs_2, s2, frag_lo_2, frag_fu_2 = effos_occ(smo_1, nel1, smo_2, nel2, frags=frags, gen=gen)
     effos_data = effos_occ(smo_1, nel1, smo_2, nel2, frags=frags, gen=gen)
     # Assign values to variables
     s1_egval = effos_data['dens1']['egval']
@@ -782,7 +835,6 @@ def EOS_calc(APOSTBase, gen=False, vis=None, log='info'):
 
     frag_fu_1 = effos_data['dens1']['frag_fu_1']
     frag_fu_2 = effos_data['dens2']['frag_fu_2']
-
 
     # Compute oxidation state
     if gen:
@@ -830,60 +882,60 @@ def EOS_calc(APOSTBase, gen=False, vis=None, log='info'):
             if frag_fu_1[f] and frag_fu_1[f][-1] == 'fu':
                 if frag_lo_2[f] and frag_lo_2[f][-1] == 'lo':
                     if frag_fu_2[f] and frag_fu_2[f][-1] == 'fu':
-                        logger.info(f"  Frag{f:<4}  {round(frag_occs_1[f],0):<3}  {round(frag_lo_1[f][1], 3):<8} {round(frag_fu_1[f][1], 3):<11}   {round(frag_occs_2[f],0):<9} {round(frag_lo_2[f][1],3):<8} {round(frag_fu_2[f][1],3):<11} {os[f]:<3}")
+                        logger.info(f"  Frag{f:<4}  {round(frag_occs_1[f],1):<3}  {round(frag_lo_1[f][1], 3):<8} {round(frag_fu_1[f][1], 3):<11}   {round(frag_occs_2[f],0):<9} {round(frag_lo_2[f][1],3):<8} {round(frag_fu_2[f][1],3):<11} {os[f]:<3}")
                     else:
-                        logger.info(f"  Frag{f:<4}  {round(frag_occs_1[f],0):<3}  {round(frag_lo_1[f][1], 3):<8} {round(frag_fu_1[f][1], 3):<11}   {round(frag_occs_2[f],0):<9} {round(frag_lo_2[f][1],3):<8} {'-':<11} {os[f]:<3}")
+                        logger.info(f"  Frag{f:<4}  {round(frag_occs_1[f],1):<3}  {round(frag_lo_1[f][1], 3):<8} {round(frag_fu_1[f][1], 3):<11}   {round(frag_occs_2[f],0):<9} {round(frag_lo_2[f][1],3):<8} {'-':<11} {os[f]:<3}")
                 else:
                     if frag_fu_2[f] and frag_fu_2[f][-1] == 'fu':
                         logger.info(
-                            f"  Frag{f:<4}  {round(frag_occs_1[f], 0):<3}  {round(frag_lo_1[f][1], 3):<8} {round(frag_fu_1[f][1], 3):<11}   {round(frag_occs_2[f], 0):<9} {'-':<8} {round(frag_fu_2[f][1], 3):<11} {os[f]:<3}")
+                            f"  Frag{f:<4}  {round(frag_occs_1[f], 1):<3}  {round(frag_lo_1[f][1], 3):<8} {round(frag_fu_1[f][1], 3):<11}   {round(frag_occs_2[f], 0):<9} {'-':<8} {round(frag_fu_2[f][1], 3):<11} {os[f]:<3}")
                     else:
                         logger.info(
-                            f"  Frag{f:<4}  {round(frag_occs_1[f], 0):<3}  {round(frag_lo_1[f][1], 3):<8} {round(frag_fu_1[f][1], 3):<11}   {round(frag_occs_2[f], 0):<9} {'-':<8} {'-':<11} {os[f]:<3}")
+                            f"  Frag{f:<4}  {round(frag_occs_1[f], 1):<3}  {round(frag_lo_1[f][1], 3):<8} {round(frag_fu_1[f][1], 3):<11}   {round(frag_occs_2[f], 0):<9} {'-':<8} {'-':<11} {os[f]:<3}")
             else:
                 if frag_lo_2[f] and frag_lo_2[f][-1] == 'lo':
                     if frag_fu_2[f] and frag_fu_2[f][-1] == 'fu':
-                        logger.info(f"  Frag{f:<4}  {round(frag_occs_1[f],0):<3}  {round(frag_lo_1[f][1], 3):<8} {'-':<11}   {round(frag_occs_2[f],0):<9} {round(frag_lo_2[f][1],3):<8} {round(frag_fu_2[f][1],3):<11} {os[f]:<3}")
+                        logger.info(f"  Frag{f:<4}  {round(frag_occs_1[f],1):<3}  {round(frag_lo_1[f][1], 3):<8} {'-':<11}   {round(frag_occs_2[f],0):<9} {round(frag_lo_2[f][1],3):<8} {round(frag_fu_2[f][1],3):<11} {os[f]:<3}")
                     else:
-                        logger.info(f"  Frag{f:<4}  {round(frag_occs_1[f],0):<3}  {round(frag_lo_1[f][1], 3):<8} {'-':<11}   {round(frag_occs_2[f],0):<9} {round(frag_lo_2[f][1],3):<8} {'-':<11} {os[f]:<3}")
+                        logger.info(f"  Frag{f:<4}  {round(frag_occs_1[f],1):<3}  {round(frag_lo_1[f][1], 3):<8} {'-':<11}   {round(frag_occs_2[f],0):<9} {round(frag_lo_2[f][1],3):<8} {'-':<11} {os[f]:<3}")
                 else:
                     if frag_fu_2[f] and frag_fu_2[f][-1] == 'fu':
                         logger.info(
-                            f"  Frag{f:<4}  {round(frag_occs_1[f], 0):<3}  {round(frag_lo_1[f][1], 3):<8} {'-':<11}   {round(frag_occs_2[f], 0):<9} {'-':<8} {round(frag_fu_2[f][1], 3):<11} {os[f]:<3}")
+                            f"  Frag{f:<4}  {round(frag_occs_1[f], 1):<3}  {round(frag_lo_1[f][1], 3):<8} {'-':<11}   {round(frag_occs_2[f], 0):<9} {'-':<8} {round(frag_fu_2[f][1], 3):<11} {os[f]:<3}")
                     else:
                         logger.info(
-                            f"  Frag{f:<4}  {round(frag_occs_1[f], 0):<3}  {round(frag_lo_1[f][1], 3):<8} {'-':<11}   {round(frag_occs_2[f], 0):<9} {'-':<8} {'-':<11} {os[f]:<3}")
+                            f"  Frag{f:<4}  {round(frag_occs_1[f], 1):<3}  {round(frag_lo_1[f][1], 3):<8} {'-':<11}   {round(frag_occs_2[f], 0):<9} {'-':<8} {'-':<11} {os[f]:<3}")
         else:
             if frag_fu_1[f] and frag_fu_1[f][-1] == 'fu':
                 if frag_lo_2[f] and frag_lo_2[f][-1] == 'lo':
                     if frag_fu_2[f] and frag_fu_2[f][-1] == 'fu':
                         logger.info(
-                            f"  Frag{f:<4}  {round(frag_occs_1[f], 0):<3}  {'-':<8} {round(frag_fu_1[f][1], 3):<11}   {round(frag_occs_2[f], 0):<9} {round(frag_lo_2[f][1], 3):<8} {round(frag_fu_2[f][1], 3):<11} {os[f]:<3}")
+                            f"  Frag{f:<4}  {round(frag_occs_1[f], 1):<3}  {'-':<8} {round(frag_fu_1[f][1], 3):<11}   {round(frag_occs_2[f], 0):<9} {round(frag_lo_2[f][1], 3):<8} {round(frag_fu_2[f][1], 3):<11} {os[f]:<3}")
                     else:
                         logger.info(
-                            f"  Frag{f:<4}  {round(frag_occs_1[f], 0):<3}  {'-':<8} {round(frag_fu_1[f][1], 3):<11}   {round(frag_occs_2[f], 0):<9} {round(frag_lo_2[f][1], 3):<8} {'-':<11} {os[f]:<3}")
+                            f"  Frag{f:<4}  {round(frag_occs_1[f], 1):<3}  {'-':<8} {round(frag_fu_1[f][1], 3):<11}   {round(frag_occs_2[f], 0):<9} {round(frag_lo_2[f][1], 3):<8} {'-':<11} {os[f]:<3}")
                 else:
                     if frag_fu_2[f] and frag_fu_2[f][-1] == 'fu':
                         logger.info(
-                            f"  Frag{f:<4}  {round(frag_occs_1[f], 0):<3}  {'-':<8} {round(frag_fu_1[f][1], 3):<11}   {round(frag_occs_2[f], 0):<9} {'-':<8} {round(frag_fu_2[f][1], 3):<11} {os[f]:<3}")
+                            f"  Frag{f:<4}  {round(frag_occs_1[f], 1):<3}  {'-':<8} {round(frag_fu_1[f][1], 3):<11}   {round(frag_occs_2[f], 0):<9} {'-':<8} {round(frag_fu_2[f][1], 3):<11} {os[f]:<3}")
                     else:
                         logger.info(
-                            f"  Frag{f:<4}  {round(frag_occs_1[f], 0):<3}  {'-':<8} {round(frag_fu_1[f][1], 3):<11}   {round(frag_occs_2[f], 0):<9} {'-':<8} {'-':<11} {os[f]:<3}")
+                            f"  Frag{f:<4}  {round(frag_occs_1[f], 1):<3}  {'-':<8} {round(frag_fu_1[f][1], 3):<11}   {round(frag_occs_2[f], 0):<9} {'-':<8} {'-':<11} {os[f]:<3}")
             else:
                 if frag_lo_2[f] and frag_lo_2[f][-1] == 'lo':
                     if frag_fu_2[f] and frag_fu_2[f][-1] == 'fu':
                         logger.info(
-                            f"  Frag{f:<4}  {round(frag_occs_1[f], 0):<3}  {'-':<8} {'-':<11}   {round(frag_occs_2[f], 0):<9} {round(frag_lo_2[f][1], 3):<8} {round(frag_fu_2[f][1], 3):<11} {os[f]:<3}")
+                            f"  Frag{f:<4}  {round(frag_occs_1[f], 1):<3}  {'-':<8} {'-':<11}   {round(frag_occs_2[f], 0):<9} {round(frag_lo_2[f][1], 3):<8} {round(frag_fu_2[f][1], 3):<11} {os[f]:<3}")
                     else:
                         logger.info(
-                            f"  Frag{f:<4}  {round(frag_occs_1[f], 0):<3}  {'-':<8} {'-':<11}   {round(frag_occs_2[f], 0):<9} {round(frag_lo_2[f][1], 3):<8} {'-':<11} {os[f]:<3}")
+                            f"  Frag{f:<4}  {round(frag_occs_1[f], 1):<3}  {'-':<8} {'-':<11}   {round(frag_occs_2[f], 0):<9} {round(frag_lo_2[f][1], 3):<8} {'-':<11} {os[f]:<3}")
                 else:
                     if frag_fu_2[f] and frag_fu_2[f][-1] == 'fu':
                         logger.info(
-                            f"  Frag{f:<4}  {round(frag_occs_1[f], 0):<3}  {'-':<8} {'-':<11}   {round(frag_occs_2[f], 0):<9} {'-':<8} {round(frag_fu_2[f][1], 3):<11} {os[f]:<3}")
+                            f"  Frag{f:<4}  {round(frag_occs_1[f], 1):<3}  {'-':<8} {'-':<11}   {round(frag_occs_2[f], 0):<9} {'-':<8} {round(frag_fu_2[f][1], 3):<11} {os[f]:<3}")
                     else:
                         logger.info(
-                            f"  Frag{f:<4}  {round(frag_occs_1[f], 0):<3}  {'-':<8} {'-':<11}   {round(frag_occs_2[f], 0):<9} {'-':<8} {'-':<11} {os[f]:<3}")
+                            f"  Frag{f:<4}  {round(frag_occs_1[f], 1):<3}  {'-':<8} {'-':<11}   {round(frag_occs_2[f], 0):<9} {'-':<8} {'-':<11} {os[f]:<3}")
 
 
 
