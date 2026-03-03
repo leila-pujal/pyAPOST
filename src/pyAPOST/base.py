@@ -9,6 +9,7 @@ from pyscf import lo
 # Imports Real
 from pyscf.dft.numint import eval_ao
 from pyscf.dft.gen_grid import Grids, get_partition, gen_atomic_grids, radi
+from pyscf.dft import gen_grid
 
 
 from pyAPOST.part_schemes import becke_w, tfvc_w
@@ -38,7 +39,7 @@ class APOSTBase(object):
 
 
 
-    def __init__(self, mol, calc, part_name=None, frags=None):
+    def __init__(self, mol, calc, part_name=None, frags=None, rpart_specs=None):
 
         #DEV:saving mol
         APOSTBase._mol = mol
@@ -181,7 +182,11 @@ class APOSTBase(object):
             self._part = Hpart(part_name, mol, frags=frags)
         elif part_name in ["becke", 'tfvc']:
             dm = self._dm_a + self._dm_b
-            self._part = Rpart(part_name, mol, dm, self._atnums, frags=frags)
+            # Check if specs
+            if rpart_specs:
+                if not isinstance(rpart_specs, dict):
+                    raise TypeError(" rpart_specs must be a dict")
+            self._part = Rpart(part_name, mol, dm, self._atnums, frags=frags, grid_specs=rpart_specs)
         else:
             raise ValueError("Could not identify partition. Choose from: Mulliken,Lowdin,Meta-Lowdin,IAO,NAO")
 
@@ -294,8 +299,7 @@ class Rpart(object):
     # todo: Allow to specify radial and angular points. in that case a dic is created to pass to atom_grid attribute before building the grid
     # todo: allow to specify radii type, radii method and empirical values (Bragg/Trehluer), and prune
 
-    # todo: allow for atomic grid specifications to pass to pyscf gen_grids
-    def __init__(self, part_name, mol, dm, atnums, frags=None, sort_grids=False, atom_grid_specs=None):
+    def __init__(self, part_name, mol, dm, atnums, frags=None, sort_grids=False, grid_specs=None):
 
         self._part_name = part_name
         logger.info(f'  Initializing Rpart : {part_name.upper()} \n')
@@ -320,26 +324,87 @@ class Rpart(object):
 
 
         # Define molecular grid and access points and weights
-        # Create class Grids and set up parameters for radial and angular grids
         self._grid = Grids(mol)
+        # Set up options different from defaults in pyscf class Grid
         self._grid.prune = None
         self._grid.radi_method = radi.becke
+        # Create class Grids and set up parameters for radial and angular grids
+        logger.info(f'  Grid information', )
+        # Update if specs included
+        if isinstance(grid_specs, dict):
+            if 'radi_method' not in grid_specs.keys():
+                logger.info(f'  Radi transf : radi_becke', )
+            elif 'prune' not in grid_specs.keys():
+                logger.info(f'  Prune : None', )
+            elif 'level' not in grid_specs.keys():
+                logger.info(f'  Level : Default', )
+            for k,v in grid_specs.items():
+                if k == 'prune':
+                    if v is None:
+                        self._grid.prune = None
+                    elif v == 'nwchem_prune':
+                        self._grid.prune = gen_grid.nwchem_prune
+                    elif v == 'sg1_prune':
+                        self._grid.prune = gen_grid.sg1_prune
+                    elif v == 'treutler_prune':
+                        self._grid.prune = gen_grid.treutler_prune
+                    else:
+                        raise TypeError(f"Specified type of pruned grid not identified: {v}")
+                    logger.info(f'  Prune : {v}', )
+
+                elif k == 'radi_method':
+                    if None:
+                        raise TypeError("Radii method must be specified")
+                    elif v == 'radi_becke':
+                        # Note: Rm can't be set up outside pyscf. Corresponds to Bragg radii
+                        self._grid.radi_method = radi.becke
+                    elif v == 'radi_treutler':
+                        self._grid.radi_method = radi.treutler
+                    elif v == 'radi_delley':
+                        self._grid.radi_method = radi.delley
+                    elif v == 'radi_mura_knowles':
+                        self._grid.radi_method = radi.mura_knowles
+                    elif v == 'radi_gauss_chebyshev':
+                        self._grid.radi_method = radi.gauss_chebyshev
+                    else:
+                        raise TypeError(f"Specified type of radii method not identified: {v}")
+                    logger.info(f'  Radi transf : {v}', )
+
+                elif k == 'level':
+                    if v > 9 or not isinstance(v, int):
+                        raise ValueError("Level must be and integer between 0 and 9")
+                    else:
+                        self._grid.level = v
+                    logger.info(f'  Points Level : {self._grid.level}', )
+                elif k == 'atom_grid':
+                    if not isinstance(v, dict):
+                        raise TypeError(f"Specs for atomic grids need to be specified as dictionary")
+                    else:
+                        self._grid.atom_grid = v
+                    logger.info(f'  Atomic grid dic : ', )
+                    for k2, v2 in v.items():
+                        logger.info(f'    Atom {k2} : rad {v2[0]}, ang(size){v2[1]}', )
+
+
+        else:
+                logger.info(f'  Radi transf : radi_becke', )
+                logger.info(f'  Prune : None', )
+                logger.info(f'  Level : Default', )
+
+        logger.info(f'  (Note: Overrides --> Prune > level)', )
+        logger.info(f'  (Note: Atom grids are pruned if both atomic grid specs and prune method are specified)', )
         # grid.becke_scheme = gen_grid.original_becke
         # grid.radii_adjust = radi.becke_atomic_radii_adjust
         # grid.atomic_radii = radi.BRAGG_RADII
         # From pyscf/dft/gen_grid.py # Padding grids to make the AO value generated by eval_gto aligned in memory
         self._grid.alignment = 0
-        if atom_grid_specs is not None and isinstance(atom_grid_specs, dict):
-            # Note: if dict doesn't follow pyscf guidelines to define rad/ang it ignores it
-            self._grid.atom_grid = atom_grid_specs
-
-        # with_non0tab: stablishes a cutoff
+        # with_non0tab: establishes a cutoff
         # from pyscf/dft/numint.py
         # screen_index: 2D uint8 array
         # How likely the AO values on grids are negligible. This array can be obtained by calling :func:`gen_grid.make_screen_index
         # sort_grids: it gets indices from arg_group_grids() it keeps the number of points the same (so far with the tests I checked)
         # but it reorganizes de points. Documentation from that function: Partition the entire space into small boxes according to the input box_size.
-        #     Group the grids against these boxes.
+        # Group the grids against these boxes.
         # self._grid.build(with_non0tab=False, sort_grids=False)
         self._grid.build(with_non0tab=False, sort_grids=sort_grids)
         self._coords = self._grid.coords
