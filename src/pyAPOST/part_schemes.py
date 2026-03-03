@@ -103,18 +103,16 @@ def becke_w(grid_cords, atm_coords, atnums, atm_grid_idx, atm_radii=None, log='i
     return w
 
 
-def tfvc_apost_w(mol, dm, grid_cords, atm_coords, atnums, atm_grid_idx, atm_radii=None):
+def tfvc_w(mol, dm, grid_cords, atm_coords, atnums, atm_grid_idx, atm_radii=None):
     """WIP: TFVC weights for AIM. This function creates the grid exactly as APOST3D code sources/wat.f subroutine khi"""
 
 
     natom = atm_coords.shape[0]
 
-    print('DEV: TFVC weights for AIM')
-    mu_ab = mu_cord(grid_cords, atm_coords)
     # 1. compute mu_ab and get brag radi
     mu_ab = mu_cord(grid_cords, atm_coords)
     # 2. Start computing atomic radii (chi)
-    logger.info('Using density along atom pairs to set atomic radii.')
+    logger.info('  Using density along atom pairs to set atomic radii.')
     # 2.1 Compute xdist to know what atom pairs to do
     mpoint_coords = (atm_coords[:, None, :] + atm_coords[None, :, :])/2
     dist_mp = np.linalg.norm(atm_coords[:, None, :] - atm_coords[None, :, :], axis=-1)/2
@@ -132,7 +130,7 @@ def tfvc_apost_w(mol, dm, grid_cords, atm_coords, atnums, atm_grid_idx, atm_radi
                 chi[i,j] = 1
                 chi[j,i] = 1
             else:
-                # Todo: Complete cases: 1. Check if maxima, 2.Deal with pseudopotentials
+                # Todo: Complete cases: 2.Deal with pseudopotentials
                 # 3. Compute atomic radii as min density along the bond
                 # Create a radial grid with a setup step.
                 # step*dfloat(k-1)*rijx : percentage of the rijx we are moving from ri
@@ -159,23 +157,40 @@ def tfvc_apost_w(mol, dm, grid_cords, atm_coords, atnums, atm_grid_idx, atm_radi
                 # check comparing with calculating ourselves the density
                 check_dens_radial = _eval_dens(mol, dm, rad_dens_grid)
                 assert np.allclose(radial_dens, check_dens_radial)
-                # Check min and max
                 n_min_idx = argrelmin(radial_dens, order=1)[0]
                 n_max_idx = argrelmax(radial_dens, order=1)[0]
                 logger.info(f'  Max : {n_max_idx} , Min : {n_min_idx}')
-                if n_min_idx:
-                    if n_max_idx or n_min_idx.shape[0] > 1:
+                maxf = False
+                if n_min_idx.shape[0] > 0:
+                    if n_min_idx.shape[0] == 1 and n_max_idx.shape[0] == 0:
+                        min_index = n_min_idx[0]
+                        logger.info(f'  Only 1 minima found : {n_min_idx}')
+                        sub_index = min_index
+                    elif n_min_idx.shape[0] == 2 and (n_max_idx.shape[0] == 1 or n_max_idx.shape[0] == 3):
+                        # Note: For now only dealing with 1 maximum between 2 minims
+                        logger.info('  Inconsistent number of extrema')
+                        # Non-nuclear attractor maxima
+                        if n_max_idx.shape[0] == 3:
+                            n_max_idx = n_max_idx[1]
+                        diff = n_min_idx - n_max_idx
+                        if diff[0] < 0 < diff[1]:
+                            logger.info(f'  The central maxima selected as dividing point: {n_max_idx}')
+                            sub_index = n_max_idx
+                            maxf = True
+                        else:
+                            raise TypeError("Couldn't sort the extrema closer to the midpoint")
+                    elif n_min_idx.shape[0] > 1 and n_max_idx:
                         logger.info('  Inconsistent number of extrema')
                         # Selecting one closest to the midpoint
                         kc = np.argmin(np.linalg.norm(mpoint_coords[i,j] - rad_dens_grid[n_min_idx], axis=-1))
                         min_index = n_min_idx[kc]
                         logger.info(f'  Selecting minimum closest to midpoint : {min_index}')
+                        sub_index = min_index
                     else:
-                        min_index = n_min_idx[0]
-                        logger.info(f'  Only 1 minima found : {n_min_idx}')
+                        raise TypeError("Couldn't sort the extrema closer to the midpoint")
+
 
                 # Second round of radial dens evaluation
-                # Set up updated start and stop for linspace
                 nsubdiv = 40 #APOST3d value
 
                 rad_dens_x_2 = np.zeros(nsubdiv)
@@ -185,19 +200,22 @@ def tfvc_apost_w(mol, dm, grid_cords, atm_coords, atnums, atm_grid_idx, atm_radi
                 step2 = 2 / (ndiv*nsubdiv)
 
                 for k in range(nsubdiv):
-                    rad_dens_x_2[k] = atm_coords[i, 0] + (step*(min_index-2+1) + step2*k)*rij[0]
-                    rad_dens_y_2[k] = atm_coords[i, 1] + (step*(min_index-2+1) + step2*k)*rij[1]
-                    rad_dens_z_2[k] = atm_coords[i, 2] + (step*(min_index-2+1) + step2*k)*rij[2]
+                    rad_dens_x_2[k] = atm_coords[i, 0] + (step*(sub_index-2+1) + step2*k)*rij[0]
+                    rad_dens_y_2[k] = atm_coords[i, 1] + (step*(sub_index-2+1) + step2*k)*rij[1]
+                    rad_dens_z_2[k] = atm_coords[i, 2] + (step*(sub_index-2+1) + step2*k)*rij[2]
                 rad_dens_grid_2 = np.column_stack((rad_dens_x_2, rad_dens_y_2, rad_dens_z_2))
 
                 # Get density on the radial points
                 radial_dens_ao_2 = eval_ao(mol, rad_dens_grid_2)
                 radial_dens_2 = eval_rho(mol, radial_dens_ao_2, dm)
-                min_value_2 = np.min(radial_dens_2)
-                min_index_2 = np.argmin(radial_dens_2)
+                # Searching for min/max based on extrema type sorted above
+                if maxf:
+                    index_2 = np.argmax(radial_dens_2)
+                else:
+                    index_2 = np.argmin(radial_dens_2)
 
                 # ri = (step * dfloat(kc - 2) + substep * dfloat(kc1 - 1))
-                ri = step*(min_index-2+1) + step2*min_index_2
+                ri = step*(sub_index-2+1) + step2*index_2
                 rj = 1 - ri
                 logger.debug(f'ri: {ri}, rj: {rj}')
                 chi[j,i] = rj/ri
@@ -216,7 +234,6 @@ def tfvc_apost_w(mol, dm, grid_cords, atm_coords, atnums, atm_grid_idx, atm_radi
     # Substitute Nans by 1. Spurious just to keep the number of dimensions
     s_a[np.isnan(s_a)] = 1
     pa = np.prod(s_a, axis=-1)
-    has_nan_g = np.isnan(pa).any()
     # transfer weights from the corresponding atom grid point
     w = np.zeros(pa.shape[0])
     for ia in range(len(atnums)):
