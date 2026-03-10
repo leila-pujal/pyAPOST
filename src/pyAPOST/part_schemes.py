@@ -8,6 +8,7 @@ from pyscf.data.radii import BRAGG
 from pyscf.lib.parameters import BOHR
 from pyscf.dft.numint import eval_ao, eval_rho
 
+from pyAPOST.utils import eval_dens
 
 import logging
 
@@ -15,16 +16,17 @@ logging.basicConfig(level=logging.INFO)
 
 logger = logging.getLogger()
 
-def _eval_dens(mol, dm, coords):
-    """Utility to evaluate density on a grid of points. Equivalent to pyscf/dft/numint.py eval_rho()"""
-    dens_ao = eval_ao(mol, coords)
-    dens = np.zeros((dens_ao.shape[0]))
-    for mu in range(dens_ao.shape[1]):
-        for nu in range(dens_ao.shape[1]):
-            dens += dm[mu, nu] * dens_ao.T[mu, :] * dens_ao.T[nu, :]
+# def _eval_dens(mol, dm, coords):
+#     """Utility to evaluate density on a grid of points. Equivalent to pyscf/dft/numint.py eval_rho()"""
+#     dens_ao = eval_ao(mol, coords)
+#     dens = np.zeros((dens_ao.shape[0]))
+#     for mu in range(dens_ao.shape[1]):
+#         for nu in range(dens_ao.shape[1]):
+#             dens += dm[mu, nu] * dens_ao.T[mu, :] * dens_ao.T[nu, :]
+#
+#     return dens
 
-    return dens
-
+# todo: code the error function erf(x/sqrt(1-x**2))
 
 def _f_k(mu_cord, k=4):
     for k in range(k):
@@ -155,7 +157,7 @@ def tfvc_w(mol, dm, grid_cords, atm_coords, atnums, atm_grid_idx, atm_radii=None
                 radial_dens_ao = eval_ao(mol, rad_dens_grid)
                 radial_dens = eval_rho(mol, radial_dens_ao, dm)
                 # check comparing with calculating ourselves the density
-                check_dens_radial = _eval_dens(mol, dm, rad_dens_grid)
+                check_dens_radial = eval_dens(mol, dm, rad_dens_grid)
                 assert np.allclose(radial_dens, check_dens_radial)
                 n_min_idx = argrelmin(radial_dens, order=1)[0]
                 n_max_idx = argrelmax(radial_dens, order=1)[0]
@@ -179,7 +181,7 @@ def tfvc_w(mol, dm, grid_cords, atm_coords, atnums, atm_grid_idx, atm_radii=None
                             maxf = True
                         else:
                             raise TypeError("Couldn't sort the extrema closer to the midpoint")
-                    elif n_min_idx.shape[0] > 1 and n_max_idx:
+                    elif n_min_idx.shape[0] >= 1 and n_max_idx:
                         logger.info('  Inconsistent number of extrema')
                         # Selecting one closest to the midpoint
                         kc = np.argmin(np.linalg.norm(mpoint_coords[i,j] - rad_dens_grid[n_min_idx], axis=-1))
