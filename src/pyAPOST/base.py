@@ -47,13 +47,17 @@ class APOSTBase(object):
         logger.info("  INITIALIZING APOSTBase object for Hilbert and Real space analysis")
         logger.info("\n\n")
 
+        # Todo: decide if to keep it stored
+        self._mol = mol
         # Molecule basic information from mol object
         self._natm = mol.natm
+        self._at_coords = mol.atom_coords()
         self._charge = mol.charge
         self._spin = mol.spin
-        self._atnums = [mol.atom_nelec_core(ia) + mol.atom_charge(ia) for ia in range(mol.natm)]
+        self._at_nums = [mol.atom_nelec_core(ia) + mol.atom_charge(ia) for ia in range(mol.natm)]
         self._alpha_elec = mol.nelec[0]
         self._beta_elec = mol.nelec[1]
+        self._e_tot = calc.e_tot
         #
         # Basis set information
         self._nbasis = mol.nbas # Number of shells
@@ -82,6 +86,7 @@ class APOSTBase(object):
         self._dft = False
         self._casscf = False
         self._ccsd = False
+        self._xc_code = None
 
 
         # Sort calc type and set mo_coeffs, mo_occ and dm
@@ -95,6 +100,8 @@ class APOSTBase(object):
             self._dm_b = calc.make_rdm1()
             if any([i in self._kind_calc for i in ["RKS", "UKS", "KS", "dftd3"]]):
                 self._dft = True
+                xc_type = calc._numint._xc_type(calc.xc)
+                self._xc_code = (calc.xc, xc_type)
             # Check unrestricted
             if any([i in self._kind_calc for i in ["UHF", "UKS"]]):
                 self._unrestr = True
@@ -181,12 +188,15 @@ class APOSTBase(object):
         if part_name in ["mulliken", "lowdin", "meta_lowdin", "iao", "nao"]:
             self._part = Hpart(part_name, mol, frags=frags)
         elif part_name in ["becke", 'tfvc']:
-            dm = self._dm_a + self._dm_b
+            if self._unrestr:
+                dm = self._dm_a + self._dm_b
+            else:
+                dm = self._dm_a
             # Check if specs
             if rpart_specs:
                 if not isinstance(rpart_specs, dict):
                     raise TypeError(" rpart_specs must be a dict")
-            self._part = Rpart(part_name, mol, dm, self._atnums, frags=frags, grid_specs=rpart_specs)
+            self._part = Rpart(part_name, mol, dm, self._at_nums, frags=frags, grid_specs=rpart_specs)
         else:
             raise ValueError("Could not identify partition. Choose from: Mulliken,Lowdin,Meta-Lowdin,IAO,NAO")
 
@@ -194,8 +204,11 @@ class APOSTBase(object):
     def natm(self):
         return self._natm
     @property
-    def atnums(self):
-        return self._atnums
+    def at_coords(self):
+        return self._at_coords
+    @property
+    def at_nums(self):
+        return self._at_nums
     @property
     def ovlp(self):
         return self._ovlp
@@ -208,6 +221,9 @@ class APOSTBase(object):
     @property
     def dft(self):
         return self._dft
+    @property
+    def xc_code(self):
+        return self._xc_code
     @property
     def part(self):
         return self._part
@@ -245,6 +261,9 @@ class APOSTBase(object):
     def dm_b(self):
         return self._dm_b
 
+    @property
+    def energy(self):
+        return self._e_tot
     @property
     def mo_coeff(self):
         raise NotImplementedError
@@ -296,8 +315,7 @@ class Rpart(object):
     # integration grids
     # Need to implement the partitions outside
     # Optional: allow to pass coords and weights bypassing relying on the PySCF Grids
-    # todo: Allow to specify radial and angular points. in that case a dic is created to pass to atom_grid attribute before building the grid
-    # todo: allow to specify radii type, radii method and empirical values (Bragg/Trehluer), and prune
+    # todo: allow to specify radii type, radii method and empirical values (Bragg/Trehluer)
 
     def __init__(self, part_name, mol, dm, atnums, frags=None, sort_grids=False, grid_specs=None):
 
@@ -417,8 +435,16 @@ class Rpart(object):
             self._aim_w = tfvc_w(mol, dm, self._coords, mol.atom_coords(), atnums, self._grid_to_atom_idx)
         else:
             raise NotImplementedError(f"Unknown part name: {part_name}")
+
+        # Evaluate density on a grid
         # Store computed atomic orbitals in a grid
         self._ao_eval_grid = eval_ao(mol, self._coords)
+        dens_ao = eval_ao(mol, self._coords)
+        dens = np.zeros((dens_ao.shape[0]))
+        for mu in range(dens_ao.shape[1]):
+            for nu in range(dens_ao.shape[1]):
+                dens += dm[mu, nu] * dens_ao.T[nu, :] * dens_ao.T[mu, :]
+        self._dens_grid = dens
 
 
     @property
@@ -438,6 +464,10 @@ class Rpart(object):
         return self._ao_eval_grid
 
     @property
+    def dens_grid(self):
+        return self._dens_grid
+
+    @property
     def grid_to_atom_idx(self):
         return self._grid_to_atom_idx
 
@@ -453,6 +483,20 @@ class Rpart(object):
     def zfrags(self):
         return self._zfrags
 
+    def rotate_grid(self):
+        """Method to rotate atomic grids"""
+
+        # 1. Get all the grid points
+        print('DEV: magic angle grid')
+        print(self.grid_coords.shape)
+        # subset of points
+        testp = self.grid_coords[0, :]
+        print(testp)
+        assert 5 == 6
+
+
+        
+
 class Hpart(object):
     # Eta, transformation matrix
     # Init could be modified by taking out passing mol and instead all the information that we extract from it
@@ -465,8 +509,6 @@ class Hpart(object):
         self.id_slice_atom = mol.aoslice_by_atom()
 
         logger.info(f'  Initializing Hpart : {part_name.upper()}')
-
-
 
         # If frags are None then it computes it for atoms
         # First check frags argument. Needs to be a list, set or numpy array.
