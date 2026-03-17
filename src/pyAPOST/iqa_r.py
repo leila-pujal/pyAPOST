@@ -488,11 +488,18 @@ def iqa_atomic(APOSTBase, f_corr=None, f_exch=None):
 
 
 
-    # Todo: Compute analytical values for energy components with pyscf
+   # EN
+    kin_analyt =  np.trace(np.dot(dm, APOSTBase._mol.intor_symmetric('int1e_kin')))
+    en_analyt = np.trace(np.dot(dm, APOSTBase._mol.intor_symmetric('int1e_nuc')))
+    # 2elec coulomb and HF exchange
+    two_eint = APOSTBase._mol.intor('int2e')
+    coul_1 = np.einsum("ab,abcd,cd->ad", dm, two_eint, dm)
+    exch_1 = np.einsum("ac,abcd,bd->ad", dm, two_eint, dm)
+    coul_analyt = 0.5 * np.sum(np.einsum("ad->a", coul_1))
+    exch_analyt = -0.25 * np.sum(np.einsum("ad->a", exch_1))
 
     iqa_r = {}
 
-    print( 'TEST INDIVIDUAL FUNCTIONS')
     iqa_r['t_nn'] = nn_energy(at_nums, at_coords)
     iqa_r['t_en'], iqa_r['at_en'], iqa_r['at_en_cond'] = en_energy(at_nums, at_coords, grid_coords, dens_grid, qw, mol_w, atgrid_idx)
     iqa_r['t_kin'], iqa_r['at_kin'] =  kin_energy(at_nums, at_coords, APOSTBase._mol, dm, grid_coords, qw, mol_w, atgrid_idx)
@@ -544,15 +551,15 @@ def iqa_atomic(APOSTBase, f_corr=None, f_exch=None):
 
     logging.info('Summary IQA')
     print(f"Nucleus-Nucleus repulsion energy: {iqa_r['t_nn']:.5f}")
-    # print('Nucleus-Nucleus repulsion energy (LIBCINT): ', nn_int)
+    # print('Nucleus-Nucleus repulsion energy (PySCF/Libcint): ', nn_int)
     # diff = abs(iqa_r['nn_total'] - nn_int)
     # print('DIFF (kcal/mol) ', diff / 0.0015936014376406278)
 
     print('------------------------------------')
     print(f"Electron-Nucleus attraction energy: {iqa_r['t_en']:.5f}" )
-    # print('Electron-Nucleus attraction energy (GBASIS): ', ne_int)
-    # diff = abs(iqa_r['en_total'] - ne_int)
-    # print('DIFF (kcal/mol) ', diff / 0.0015936014376406278)
+    print(f'Electron-Nucleus attraction energy (PySCF/Libcint): {en_analyt: .5f}')
+    diff = abs(iqa_r['t_en'] - en_analyt)
+    print('DIFF (kcal/mol) ', diff / 0.0015936014376406278)
     print()
     # assert 5 ==6
     print("Atomic Electron-Nucleus attraction energy (Condensed):")
@@ -560,9 +567,9 @@ def iqa_atomic(APOSTBase, f_corr=None, f_exch=None):
         print(f"{at}   {iqa_r['at_en_cond'][idx]: .5f}")
     print('------------------------------------')
     print(f"Kinetic energy:  {iqa_r['t_kin']:.5f}" )
-    # print('Kinetic energy(HORTON):  ', kin_int)
-    # diff = abs(iqa_r['kin_total'] - kin_int)
-    # print('DIFF (kcal/mol) ', diff / 0.0015936014376406278)
+    print(f'Kinetic energy(PySCF/Libcint):  {kin_analyt: .5f}')
+    diff = abs(iqa_r['t_kin'] - kin_analyt)
+    print('DIFF (kcal/mol) ', diff / 0.0015936014376406278)
     print()
     print('Atomic Kinetic energy:')
     for idx, at in enumerate(at_nums):
@@ -571,6 +578,9 @@ def iqa_atomic(APOSTBase, f_corr=None, f_exch=None):
     print('Electron-Electron interaction energy')
     print()
     print(f"Coulomb energy: {iqa_r['t_coul']: .5f}", )
+    print(f'Coulomb energy(PySCF/Libcint):  {coul_analyt: .5f}')
+    diff = abs(iqa_r['t_coul'] - coul_analyt)
+    print('DIFF (kcal/mol) ', diff / 0.0015936014376406278)
     print()
     print('Atomic Coulomb energy:')
     for idx, at in enumerate(at_nums):
@@ -596,6 +606,9 @@ def iqa_atomic(APOSTBase, f_corr=None, f_exch=None):
 
     if 'x_hf_total' in iqa_r.keys():
         print(f"HF Exchange: {iqa_r['t_exch']: .5f}" )
+        print(f'HF Exchange energy(PySCF/Libcint):  {exch_analyt: .5f}')
+        diff = abs(iqa_r['t_exch'] - exch_analyt)
+        print('DIFF (kcal/mol) ', diff / 0.0015936014376406278)
         print('COEFF MIX :', coeff_mix)
         print()
         print('Atomic HF Exchange energy:')
