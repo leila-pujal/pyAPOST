@@ -266,27 +266,177 @@ def ee_dft_energy(at_nums, xc_code, xc_type, rho, ao_dens, qw, aim_w, atgrid_idx
 
     return xc_e, at_dft, coeff_hf
 
+def ee_hf_energy_interatomic(at_nums, grid_coords1, grid_coords2, mo_grid1, mo_grid2, qw, aim_w1, aim_w2, atgrid_idx):
+    """Function to compute Coulomb and HF exchange numerically"""
+    print('DEV ee hf energy interatomic')
+
+    t_coul = np.zeros((len(at_nums), len(at_nums)))
+    t_exch = np.zeros((len(at_nums), len(at_nums)))
+
+
+    for ia in range(len(at_nums)):
+        # Get atomic grid for at A
+        a_grid_coords = grid_coords1[atgrid_idx == ia, :]
+        atgrid_idx_a = np.where(atgrid_idx == ia)[0]
+        # print('CHECK idx a', atgrid_idx_a[0:5], atgrid_idx_a[-5:-1], atgrid_idx_a.shape)
+        for ib in range(ia+1):
+            b_grid_coords = grid_coords2[atgrid_idx == ib, :]
+            atgrid_idx_b = np.where(atgrid_idx == ib)[0]
+            # id_p1 = index for the atomic grid a
+            # p1 = index of the atomic grid a within the molecular grid
+            rij_small = 0
+            for id_p1, p1 in enumerate(atgrid_idx_a):
+                # Loop only for occupied orbitals
+                coul_dens = 0
+                exch_dens = 0
+                for i in range(mo_grid1.shape[0]):
+                    for j in range(mo_grid2.shape[0]):
+                        coul_dens += 2 * mo_grid1[i, p1] * mo_grid1[i, p1] * mo_grid2[j, atgrid_idx_b ] * mo_grid2[j, atgrid_idx_b]
+                        exch_dens += mo_grid1[i, p1] * mo_grid1[j, p1] * mo_grid2[j, atgrid_idx_b] * mo_grid2[i, atgrid_idx_b]
+                # Compute rij between i point index (p1) and atom b atgrid points
+                rij = np.linalg.norm(a_grid_coords[id_p1, :] - b_grid_coords, axis=-1)
+
+                coul_dens = coul_dens / rij
+                exch_dens = exch_dens / rij
+                # filter values of the points wit rij < 1e-3. If not filtered they add spurious big values
+                coul_dens[rij<1e-5] = 0
+                exch_dens[rij<1e-5] = 0
+                rij_small += rij[rij<1e-5].shape[0]
+                # Now integration starts. Get aim weights for p1 atgridA and all points in atgridB
+                coul_b = np.sum(coul_dens* qw[atgrid_idx_b] * aim_w2[atgrid_idx_b]) # integrated for atB
+                exch_b = np.sum(exch_dens* qw[atgrid_idx_b] * aim_w2[atgrid_idx_b]) # integrated for atB
+                coul = coul_b * qw[p1] * aim_w1[p1]
+                exch = exch_b * qw[p1] * aim_w1[p1]
+                if ia != ib:
+                    t_coul[ia, ib] += 2*coul
+                    t_exch[ia, ib] += 2*exch
+                    t_coul[ib, ia] = t_coul[ia, ib]
+                    t_exch[ib, ia] = t_exch[ia, ib]
+                else:
+                    t_coul[ia, ib] += coul
+                    t_exch[ia, ib] += exch
+
+            print(f'DEBUG: TOTAL NUMBER OF POINTS WITH Rij < 1e3 : {rij_small}')
+    print('SUMMARY TWO ELECTRON NUMERICAL INTEGRATION')
+    print(f'*** COULOMB PART ***')
+    print(t_coul)
+
+    # Q: If pure functional theoretically we don't need to compute it. However the bootleneck right now should be
+    # the `for` loop so for the same price we can integrate both
+    print(f'*** HF EXCHANGE PART ***')
+    print(-t_exch)
+    print()
+    return t_coul, -t_exch
+
+
+
+
+
+
+
+
 def iqa_interatomic(APOSTBase, f_corr=None, f_exch=None):
     """WIP: Function to obtain two electron dependent energy quantities and
     interatomic components for DFT xc energy based on the BOD method"""
 
+    at_coords = APOSTBase.at_coords
+    at_nums = np.array(APOSTBase.at_nums)
+
+    # Grid info
+    grid_coords = APOSTBase.part.grid_coords
+    qw = APOSTBase.part._grid.quadrature_weights
+    mol_w = APOSTBase.part.aim_w
+    atgrid_idx = APOSTBase.part.grid_to_atom_idx
+    # mg = APOSTBase.part.grid_weights
+
+    # Density info. For now only SD
+    thresh = 1e-8
+    occ_coeff_a = APOSTBase.mo_coeff_a[:, APOSTBase.occ_a > thresh]
+    occ_coeff_b = APOSTBase.mo_coeff_b[:, APOSTBase.occ_a > thresh]
+    occ_a = APOSTBase.occ_a[APOSTBase.occ_a > thresh]
+    occ_b = APOSTBase.occ_b[APOSTBase.occ_b > thresh]
+    dm = APOSTBase.dm_a
+
     # Compute interatomic terms for HF exchange/coulomb and DFT
     # for each point in grid_1 (Atom A) integrate all points in grid_2 (Atom B).
-    # We need to 1.Generate a second grid and 2.Atomic weights should be the same because AIM weights depend on the distance
+    # We need to 1.Generate a second grid and 2.Atomic weights (quadrature) are the same for both grids as they depend only on the distance
+    # 3. Regenerate AIM weights
     # Rotate specific angle in rads
-    # 
+    # 1. Get points and compute the polar angles theta and phi
+    grid_coords1 = copy.copy(APOSTBase.part.grid_coords)
+    print('DEV HF 2 electron numerical integration')
+    print(f'TOTAL NUMBER OF GRID1 POINTS: {grid_coords1.shape}')
+
+    # Calling method to rotate the grid coords
+    pha = 0
+    phb = 0.162
+    # Note for the code:
+    # APOST3D code: APOST3D generates the rotated grid not by rotating grid1 but by starting from scratch.
+    # It generates distance and theta,fix for the same radial and angular points and then instead of passing 0 for pha and phb
+    # it passes the specified value. This second call of the prenumint rutine is only called inside enpart.f (and only if numerical 2e integration
+    # is requested, not for semi analytical IQA). Once the theta and fix angles have been rotated the atomic coordinates are addedd
+    # Here because we rely on the Grid pyscf machinery to get the points and the atomic(quadrature) weights before rotating the points
+    # we substract the atomic coordinates, and then rotate them again. After that we generate a second set of AIM weights for the rotated grid but keep the same
+    # atomi(quadrature) weights.
+
+    grid_coords2, aim_n = APOSTBase.part.rotate_grid(at_coords, at_nums, pha, phb, dm)
+    print(f'DEV: ROTATED GRID AND AIM: {grid_coords2.shape}, {aim_n.shape}')
+
+    # Evaluating molecular orbitals on Grid1 and Grid2
+
+    eval_ao_grid1 = eval_ao(APOSTBase._mol, grid_coords1, deriv=0)
+    eval_ao_grid2 = eval_ao(APOSTBase._mol, grid_coords2, deriv=0)
+    # Note: DEV happening with coeff a because restricted closed shell. Todo:  extend to beta
+    eval_mo_grid1 = np.einsum('pa,ai->ip ', eval_ao_grid1, occ_coeff_a)
+    eval_mo_grid2 = np.einsum('pa,ai->ip ', eval_ao_grid2, occ_coeff_a)
+    dens_grid_1 = np.zeros((eval_mo_grid1.shape[1]))
+    dens_grid_2 = np.zeros((eval_mo_grid2.shape[1]))
+    for i in range(eval_mo_grid1.shape[0]):
+        dens_grid_1 += eval_mo_grid1[i, :] * eval_mo_grid1[i, :] * occ_a[i]
+        dens_grid_2 += eval_mo_grid2[i, :] * eval_mo_grid2[i, :] * occ_a[i]
+
+    total_elect_int_1 = np.sum(dens_grid_1 * mol_w * qw)
+    total_elect_int_2 = np.sum(dens_grid_2 * qw * aim_n)
+    print('CHECK TOTAL ELECT INT 1', total_elect_int_1)
+    print('CHECK TOTAL ELECT INT 1', total_elect_int_2)
 
 
+    coul_n, exch_n = ee_hf_energy_interatomic(at_nums, grid_coords1, grid_coords2, eval_mo_grid1, eval_mo_grid2, qw, mol_w,aim_n, atgrid_idx)
 
+    #analytic value for 2elec integrals coulomb and hf exchange
+    two_eint = APOSTBase._mol.intor('int2e')
+    coul_1 = np.einsum("ab,abcd,cd->ad", dm, two_eint, dm)
+    exch_1 = np.einsum("ac,abcd,bd->ad", dm, two_eint, dm)
+    coul_analyt = 0.5 * np.sum(np.einsum("ad->a", coul_1))
+    exch_analyt = -0.25 * np.sum(np.einsum("ad->a", exch_1))
+
+    iqa_inter_r = {}
+    iqa_inter_r['t_coul'] = np.sum(np.triu(coul_n))
+    iqa_inter_r['t_exch'] = np.sum(np.triu(exch_n))
+
+    print('TOTAL ENERGY SUM OF COMPONENTS ')
+    print('COULOMB', f"{iqa_inter_r['t_coul']: .5f}")
+    print(f'COULOMB (PySCF/Libcint): {coul_analyt: .5f}')
+    diff_c = iqa_inter_r['t_coul'] - coul_analyt
+    print('DIFF ', diff_c)
+    print('DIFF (kcal/mol) ', diff_c / 0.0015936014376406278)
+    print()
+    print('HF EXCHANGE', f"{iqa_inter_r['t_exch']: .5f}")
+    print(f'HF EXCHANGE (PySCF/Libcint): {exch_analyt: .5f}')
+    diff_x = iqa_inter_r['t_exch'] - exch_analyt
+    print('DIFF', diff_x )
+    print('DIFF (kcal/mol) ', diff_x / 0.0015936014376406278)
+    print('TOTAL DIFF', (diff_c + diff_x))
+    print('TOTAL DIFF (kcal/mol)', (diff_c + diff_x)/ 0.0015936014376406278)
 
 def iqa_atomic(APOSTBase, f_corr=None, f_exch=None):
     """WIP: Function to obtain one electron dependent energy quantities"""
 
     # NN energy: Coulomb formula of charge repulsion-Analytic (Done)
     # EN energy: Compute density (Done)
-    # Kinetic energy: Obtain density and density gradients
+    # Kinetic energy: Obtain density and density gradients (Done)
     # Exchange and Coulomb HF (pseudo analytical with only one electron numerical): Use the point charge integral within pyscf (Done)
-    # DFT exchange-correlation
+    # DFT exchange-correlation (Done)
 
 
     print('DEV" ATOMIC IQA CALC')
@@ -464,9 +614,3 @@ def iqa_atomic(APOSTBase, f_corr=None, f_exch=None):
     # print('CHARGE PART OBJECT', self.part.charges)
     assert 5 == 7
     return iqa_r
-
-
-
-
-def iqa_pairwise():
-    """WIP: Function to obtain two electron dependent energy quantities"""

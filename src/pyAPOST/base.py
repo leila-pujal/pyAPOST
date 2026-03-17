@@ -1,7 +1,8 @@
 import numpy as np
 
 import scipy as scipy
-
+# from scipy.spatial.transform import Rotation as R
+import copy as copy
 # Imports Hilbert
 from pyscf import mcscf
 from pyscf import lo
@@ -321,6 +322,11 @@ class Rpart(object):
 
         self._part_name = part_name
         logger.info(f'  Initializing Rpart : {part_name.upper()} \n')
+        # Keeping mol for now in a protected attribute because it is needed in other places outside init
+        # Note: Think of a way of accessing mol differently. Maybe Rpart a subclass of APOSTBase? I still need
+        # the at_nums and at_coords. Either this is transformed as a subclass only accessible from an APOSTBase one
+        # or all this information is kept.
+        self._mol = mol
 
 
         # If frags are None then it computes it for atoms
@@ -483,11 +489,40 @@ class Rpart(object):
     def zfrags(self):
         return self._zfrags
 
-    def rotate_grid(self):
-        """Method to rotate atomic grids"""
+    def rotate_grid(self, at_coords, at_nums, pha, phb, dm):
+        """Method to rotate atomic grids
+        it is a compose rotation through the x and z directions with -pha and -phb angles
+        """
+        # Todo: add the latex matrix to the docstring
+        # Note: if we regenerate the AIMs we need the DM. we could add a flag to make this an option besides the roation
+        # or force it to alway pass it. For now passing it.
+        # Warning: keep attention if we need to copy
+        # First substract atom coords from grid_coords
+        grid_coords2_pre_0 = copy.copy(self.grid_coords)[self.grid_to_atom_idx == 0] - at_coords[0]
+        grid_coords2_pre_1 = copy.copy(self.grid_coords)[self.grid_to_atom_idx == 1] - at_coords[1]
+        # Todo: Once the code is more stable add debug printings
 
         # 1. Get all the grid points
-        print('DEV: magic angle grid')
+        coords_to_roatate = copy.copy(self._grid.coords)
+        print(f'ROTATING THE GRID PHA={pha}, PHB={phb}')
+        rot_mat =  scipy.spatial.transform.Rotation.from_euler('zx', [-phb, -pha], degrees=False).as_matrix()
+        grid_coords2_p0 = np.dot(grid_coords2_pre_0, rot_mat)
+        grid_coords2_p1 = np.dot(grid_coords2_pre_1, rot_mat)
+        grid_coords2_0 = grid_coords2_p0 + at_coords[0]
+        grid_coords2_1 = grid_coords2_p1 + at_coords[1]
+
+        grid_coords2 = np.vstack((grid_coords2_0, grid_coords2_1))
+        # Generate the corresponding new AIM weights
+        if self.part_name == 'becke':
+            aim_rot = becke_w(grid_coords2, at_coords, at_nums, self._grid_to_atom_idx)
+        elif self.part_name == 'tfvc':
+            aim_rot = tfvc_w(self._mol, dm, grid_coords2, at_coords, at_nums, self._grid_to_atom_idx)
+        else:
+            raise NotImplementedError(f"Unknown part name: {self.part_name}")
+
+        return (grid_coords2, aim_rot)
+
+
         print(self.grid_coords.shape)
         # subset of points
         testp = self.grid_coords[0, :]
