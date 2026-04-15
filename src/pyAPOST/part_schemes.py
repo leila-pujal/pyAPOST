@@ -50,7 +50,7 @@ def mu_cord(grid_cords, atm_coords):
     mu_ab = mu_ab.transpose([2, 0, 1]) # transpose to have mu_ab values as first dimension
     return mu_ab
 #todo: use atm_radii when passed
-def becke_w(grid_cords, atm_coords, atnums, atm_grid_idx, atm_radii=None, log='info'):
+def becke_w(grid_cords, atm_coords, atnums, atm_grid_idx, atm_radii=None, log='info', all_points=False):
     """WIP: Becke weights for AIM."""
 
     print('DEV: Becke weights for AIM')
@@ -98,14 +98,20 @@ def becke_w(grid_cords, atm_coords, atnums, atm_grid_idx, atm_radii=None, log='i
     s_a[np.isnan(s_a)] = 1
     pa = np.prod(s_a, axis=-1)
     # transfer weights from the corresponding atom grid point
-    w = np.zeros(pa.shape[0])
-    for ia in range(len(atnums)):
-        w[atm_grid_idx==ia] += pa[atm_grid_idx==ia, ia] / np.sum(pa[atm_grid_idx==ia, :], axis=1)
+    w2 = np.zeros((pa.shape[1], pa.shape[0]))
+    if all_points:
+        w = np.zeros((pa.shape[1], pa.shape[0]))
+        for ia in range(len(atnums)):
+            w[ia] = pa[:, ia] / np.sum(pa, axis=1)
+        return w
+    else:
+        w = np.zeros(pa.shape[0])
+        for ia in range(len(atnums)):
+            w[atm_grid_idx == ia] += pa[atm_grid_idx == ia, ia] / np.sum(pa[atm_grid_idx == ia, :], axis=1)
+        return w
 
-    return w
 
-
-def tfvc_w(mol, dm, grid_cords, atm_coords, atnums, atm_grid_idx, atm_radii=None):
+def tfvc_w(mol, dm, grid_cords, atm_coords, atnums, atm_grid_idx, atm_radii=None, all_points=False):
     """WIP: TFVC weights for AIM. This function creates the grid exactly as APOST3D code sources/wat.f subroutine khi"""
 
 
@@ -237,7 +243,15 @@ def tfvc_w(mol, dm, grid_cords, atm_coords, atnums, atm_grid_idx, atm_radii=None
     s_a[np.isnan(s_a)] = 1
     pa = np.prod(s_a, axis=-1)
     # transfer weights from the corresponding atom grid point
-    w = np.zeros(pa.shape[0])
-    for ia in range(len(atnums)):
-        w[atm_grid_idx == ia] += pa[atm_grid_idx == ia, ia] / np.sum(pa[atm_grid_idx == ia, :], axis=1)
-    return w
+    if all_points:
+        w = np.zeros((pa.shape[1], pa.shape[0]))
+        for ia in range(len(atnums)):
+            w[ia] = pa[:, ia] / np.sum(pa, axis=1)
+
+        return w
+    else:
+        w = np.zeros(pa.shape[0])
+        for ia in range(len(atnums)):
+            w[atm_grid_idx == ia] += pa[atm_grid_idx == ia, ia] / np.sum(pa[atm_grid_idx == ia, :], axis=1)
+
+        return w

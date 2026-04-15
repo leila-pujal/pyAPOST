@@ -9,7 +9,7 @@ from pyscf import lo
 
 # Imports Real
 from pyscf.dft.numint import eval_ao
-from pyscf.dft.gen_grid import Grids, get_partition, gen_atomic_grids, radi
+from pyscf.dft.gen_grid import Grids, gen_atomic_grids, radi
 from pyscf.dft import gen_grid
 
 
@@ -26,7 +26,7 @@ logger = logging.getLogger()
 
 # TODO: Use attr library to lock the value of attributes once they are initialized after a new object.
 # TODO: Decide how to pass the log level. Right now it's changed on EOS function but maybe it should be pased here
-# the worry is that if left unchecked, because we are parsing from pyscf Mole/Calc if they change for whatever
+# the potential problem is that if left unchecked, because we are parsing from pyscf Mole/Calc if they change for whatever
 # reason that could be traced to the related variables inside pyAPOST. A brute force solution would be to use
 # copy library but it would be annoying.
 
@@ -37,8 +37,6 @@ class APOSTBase(object):
     mol: object of class Mole from PySCF
     calc: object of method calculation from PySCF
     """
-
-
 
     def __init__(self, mol, calc, part_name=None, frags=None, rpart_specs=None):
 
@@ -87,18 +85,14 @@ class APOSTBase(object):
         self._dft = False
         self._casscf = False
         self._ccsd = False
-        self._xc_code = None
+        self._xc_code = (None, None)
 
 
         # Sort calc type and set mo_coeffs, mo_occ and dm
+        # todo: first I should check for unrestricted
+        # todo: Put test to be sure we fill the variables correctly
         if any([i in self._kind_calc for i in ["RHF", "RKS", "UHF", "UKS", "KS", "dftd3"]]):
             self._sd = True
-            self._mo_coeff_a = calc.mo_coeff
-            self._mo_coeff_b = calc.mo_coeff
-            self._occ_a = calc.mo_occ
-            self._occ_b = calc.mo_occ
-            self._dm_a = calc.make_rdm1()
-            self._dm_b = calc.make_rdm1()
             if any([i in self._kind_calc for i in ["RKS", "UKS", "KS", "dftd3"]]):
                 self._dft = True
                 xc_type = calc._numint._xc_type(calc.xc)
@@ -113,6 +107,18 @@ class APOSTBase(object):
                 self._occ_a = calc.mo_occ[0]
                 self._occ_b = calc.mo_occ[1]
                 self._dm_a, self._dm_b = calc.make_rdm1()
+                print(self._occ_a)
+                print(self._dm_a, self._dm_b)
+                self._s = calc.get_ovlp()
+                print(np.trace(np.dot(self._dm_a, self._s)))
+            else:
+                self._mo_coeff_a = calc.mo_coeff
+                self._mo_coeff_b = calc.mo_coeff
+                self._occ_a = calc.mo_occ
+                self._occ_b = calc.mo_occ
+                self._dm_a = calc.make_rdm1()
+                self._dm_b = calc.make_rdm1()
+
         elif "CASSCF" in self._kind_calc:
             self._casscf = True
             # Because PySCF does not store CASSCF mo_coeff coefficients for all orbitals together
@@ -190,7 +196,7 @@ class APOSTBase(object):
             self._part = Hpart(part_name, mol, frags=frags)
         elif part_name in ["becke", 'tfvc']:
             if self._unrestr:
-                dm = self._dm_a + self._dm_b
+                dm = (self._dm_a, self._dm_b)
             else:
                 dm = self._dm_a
             # Check if specs
@@ -346,7 +352,6 @@ class Rpart(object):
             zatoms = mol.atom_charges()
             self._zfrags = [sum(zatoms[i - 1] for i in group) for group in self._frags]
 
-
         # Define molecular grid and access points and weights
         self._grid = Grids(mol)
         # Set up options different from defaults in pyscf class Grid
@@ -437,20 +442,46 @@ class Rpart(object):
         self._grid_to_atom_idx = self._grid.atm_idx
         if part_name == 'becke':
             self._aim_w = becke_w(self._coords, mol.atom_coords(), atnums, self._grid_to_atom_idx)
+            self._aim_w_all_p = becke_w(self._coords, mol.atom_coords(), atnums, self._grid_to_atom_idx, all_points=True)
         elif part_name == 'tfvc':
-            self._aim_w = tfvc_w(mol, dm, self._coords, mol.atom_coords(), atnums, self._grid_to_atom_idx)
+            if isinstance(dm, tuple) and len(dm) == 2:
+                dm_all = dm[0].copy()
+                dm_all += dm[1]
+                self._aim_w = tfvc_w(mol, dm_all, self._coords, mol.atom_coords(), atnums, self._grid_to_atom_idx)
+                self._aim_w_all_p = tfvc_w(mol, dm_all, self._coords, mol.atom_coords(), atnums, self._grid_to_atom_idx, all_points=True)
+            else:
+                self._aim_w = tfvc_w(mol, dm, self._coords, mol.atom_coords(), atnums, self._grid_to_atom_idx)
+                self._aim_w_all_p = tfvc_w(mol, dm, self._coords, mol.atom_coords(), atnums, self._grid_to_atom_idx, all_points=True)
         else:
             raise NotImplementedError(f"Unknown part name: {part_name}")
 
+        # Todo: decide what to do with computing the density. the question is how to minimize
+        # repetition of code as much as possible.
         # Evaluate density on a grid
         # Store computed atomic orbitals in a grid
         self._ao_eval_grid = eval_ao(mol, self._coords)
         dens_ao = eval_ao(mol, self._coords)
-        dens = np.zeros((dens_ao.shape[0]))
+        if isinstance(dm, tuple) and len(dm) == 2:
+            dm_a, dm_b = dm
+            dens_a = np.zeros((dens_ao.shape[0]))
+            dens_b = np.zeros((dens_ao.shape[0]))
+
+        elif isinstance(dm, np.ndarray) and dm.shape[0] == dens_ao.shape[1] and dm.shape[1] == dens_ao.shape[1]:
+            dm_a = dm
+            dm_b = None
+            dens_a = np.zeros((dens_ao.shape[0]))
+        else:
+            raise TypeError(f"Wrong type of dm")
         for mu in range(dens_ao.shape[1]):
             for nu in range(dens_ao.shape[1]):
-                dens += dm[mu, nu] * dens_ao.T[nu, :] * dens_ao.T[mu, :]
-        self._dens_grid = dens
+                dens_a += dm_a[mu, nu] * dens_ao.T[nu, :] * dens_ao.T[mu, :]
+                if dm_b is not None:
+                    dens_b += dm_b[mu, nu] * dens_ao.T[nu, :] * dens_ao.T[mu, :]
+
+        if dm_b is not None:
+            self._dens_grid = (dens_a, dens_b)
+        else:
+            self._dens_grid = dens_a
 
 
     @property
@@ -480,6 +511,10 @@ class Rpart(object):
     @property
     def aim_w(self):
         return self._aim_w
+
+    @property
+    def aim_w_allp(self):
+        return self._aim_w_all_p
 
     @property
     def frags(self):
