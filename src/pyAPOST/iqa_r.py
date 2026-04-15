@@ -1,10 +1,62 @@
 # IQA module in real space
 import copy as copy
+import time as time
+
+import multiprocessing as mp
+from multiprocessing import set_start_method, get_start_method
+import os as os
+import numba as numba
+from numba import njit
+
 import numpy as np
 import logging
 
 from pyscf.dft.numint import eval_ao, eval_rho
 from pyscf.dft.libxc import eval_xc, is_hybrid_xc, hybrid_coeff
+
+from pyAPOST.utils import out_summary
+
+
+# @njit(nopython=True, parallel=True)
+@njit(nopython=True)
+def _two_elect_integral(id_p1, p1, mo_grid1, mo_grid2, atgrid_idx_b, a_grid_coords, b_grid_coords, qw, aim_w1, aim_w2, rij_v=1e-5):
+    """ WIP: Auxiliary function for parallel calculation of 2e integrals"""
+    # print('inside _two_elect_integral')
+    # Loop only for occupied orbitals
+    ther_rij = rij_v
+    if id_p1 == 0:
+        print('Threshold rij', ther_rij)
+    coul_dens = np.zeros((mo_grid2[0, atgrid_idx_b].shape[0]))
+    exch_dens = np.zeros((mo_grid2[0, atgrid_idx_b].shape[0]))
+    for i in range(mo_grid1.shape[0]):
+        for j in range(mo_grid2.shape[0]):
+            coul_dens += 2 * mo_grid1[i, p1] * mo_grid1[i, p1] * mo_grid2[j, atgrid_idx_b ] * mo_grid2[j, atgrid_idx_b]
+            exch_dens += mo_grid1[i, p1] * mo_grid1[j, p1] * mo_grid2[j, atgrid_idx_b] * mo_grid2[i, atgrid_idx_b]
+    # Compute rij between i point index (p1) and atom b atgrid points
+    # rij = np.linalg.norm(a_grid_coords[id_p1, :] - b_grid_coords, axis=-1)
+    rij = a_grid_coords[id_p1, :] - b_grid_coords
+    rij = np.sqrt(np.sum(np.square(rij), axis=-1))
+    if id_p1 == 0:
+        print('Shape rij', rij.shape)
+        print('Filter rij', rij[rij<ther_rij].shape)
+
+
+    coul_dens = coul_dens / rij
+    exch_dens = exch_dens / rij
+    # filter values of the points wit rij < 1e-3. If not filtered they add spurious big values
+    coul_dens[rij<ther_rij] = 0
+    exch_dens[rij<ther_rij] = 0
+    # order is 1e-15
+    # rij_small += rij[rij<1e-9].shape[0]
+    # Now integration starts. Get aim weights for p1 atgridA and all points in atgridB
+    coul_b = np.sum(coul_dens* qw[atgrid_idx_b] * aim_w2[atgrid_idx_b]) # integrated for atB
+    exch_b = np.sum(exch_dens* qw[atgrid_idx_b] * aim_w2[atgrid_idx_b]) # integrated for atB
+    coul = coul_b * qw[p1] * aim_w1[p1]
+    exch = exch_b * qw[p1] * aim_w1[p1]
+
+    return coul, exch, rij[rij<ther_rij].shape[0]
+
+
 
 
 def nn_energy(at_nums, at_coords):
@@ -151,18 +203,35 @@ def kin_energy(at_nums, at_coords, mol, dm, grid_coords, qw, aim_w, atgrid_idx )
     return kin_t, at_kin
 
 
-def ee_hf_energy(at_nums, at_coords, mol, dm, grid_coords, eval_ao_grid, mo_coeff, occ, qw, aim_w, atgrid_idx):
+def ee_hf_energy(at_nums, at_coords, mol, dm, grid_coords, eval_ao_grid, mo_coeff, occ, qw, aim_w, atgrid_idx, coul=True, x=True):
     r"""Compute Hartree Fock electron-electron interaction energy."""
 
     # Follow libcint approach, loop for each charge
     # Compute molecular orbitals numerically
     # Note: mo_coeff filtered by occ
+    # if isinstance(mo_coeff, tuple) and len(mo_coeff) == 2:
+    #     dens_grid = np.zeros((eval_ao_grid.shape[0]))
+    #     mo_grid = np.zeros((mo_coeff[0].shape[1] +mo_coeff[1].shape[1], eval_ao_grid.shape[0]))
+    #     mo_grid[:occ[0].shape[0]] = np.einsum('pa,ai->ip ', eval_ao_grid, mo_coeff[0])
+    #     mo_grid[occ[0].shape[0]:] = np.einsum('pa,ai->ip ', eval_ao_grid, mo_coeff[1])
+    #     for s in range(2):
+    #         for i in range(mo_coeff[s].shape[1]):
+    #             dens_grid += mo_grid[i, :] * mo_grid[i, :] * occ[s][i]
+    #
+    #     total_elect_int = np.sum(dens_grid * qw *aim_w)
+    # elif isinstance(mo_coeff, np.ndarray):
+
+    # Initialize returned variables to be consistent
+    t_coul, t_exch, at_coul, at_exch = None, None, None, None
+
+
     mo_grid = np.einsum('pa,ai->ip ', eval_ao_grid, mo_coeff)
     dens_grid = np.zeros((mo_grid.shape[1]))
     for i in range(mo_grid.shape[0]):
         dens_grid += mo_grid[i, :] * mo_grid[i, :] * occ[i]
 
-    total_elect_int = np.sum(dens_grid * qw *aim_w)
+    total_elect_int = np.sum(dens_grid * qw * aim_w)
+
 
     print(f'  Check integrated elect: {total_elect_int: .5f}\n')
 
@@ -170,8 +239,7 @@ def ee_hf_energy(at_nums, at_coords, mol, dm, grid_coords, eval_ao_grid, mo_coef
     chunk_size = 250000000 // (mol.nao_nr() ** 2)
     print('chunk_size', chunk_size)
     istart = 0
-    t_exch_num = np.zeros((grid_coords.shape[0]))
-    t_coul_num = np.zeros((grid_coords.shape[0]))
+
     while istart < grid_coords.shape[0]:
         iend = min(istart + chunk_size, grid_coords.shape[0])
         chunk_pc = np.zeros((mol.nao_nr(), mol.nao_nr(), iend))
@@ -182,48 +250,81 @@ def ee_hf_energy(at_nums, at_coords, mol, dm, grid_coords, eval_ao_grid, mo_coef
                 # Note: Exchange negative introduced with the one charge
                 pc_int *= -1
                 chunk_pc[:, :, ip] = pc_int
-        pc_rho =  np.trace(np.tensordot(dm, (chunk_pc * chunk_dens), axes=(1, 0)))
-        coul_chunk = -0.5*pc_rho
-        # occupied_mo[molecule.mo.occsa > 0] = 1
-        t1 = np.einsum("abn,ai->ibn", chunk_pc, mo_coeff)
-        t1 = np.einsum("ibn,bj->ijn", t1, mo_coeff)
-        exch_chunk = np.einsum("ijn,in,jn->n", t1, mo_grid, mo_grid)
 
-        t_coul_num[istart:iend] = coul_chunk
-        t_exch_num[istart:iend] = exch_chunk
+
+        if coul:
+            t_coul_num = np.zeros((grid_coords.shape[0]))
+            pc_rho =  np.trace(np.tensordot(dm, (chunk_pc * chunk_dens), axes=(1, 0)))
+            t_coul_num[istart:iend] = -0.5 * pc_rho
+        if x:
+            t_exch_num = np.zeros((grid_coords.shape[0]))
+            t1 = np.einsum("abn,ai->ibn", chunk_pc, mo_coeff)
+            t1 = np.einsum("ibn,bj->ijn", t1, mo_coeff)
+            exch_chunk = np.einsum("ijn,in,jn->n", t1, mo_grid, mo_grid)
+            print('occ', occ)
+            if occ[0] == 2:
+                t_exch_num[istart:iend] =  exch_chunk
+            elif occ[0] == 1:
+                t_exch_num[istart:iend] = 0.5 * exch_chunk
+            del t1
+
+
         istart = iend
 
-        del t1
 
-    t_coul = np.sum(t_coul_num*qw*aim_w)
-    t_exch = np.sum(t_exch_num*qw*aim_w)
 
-    print(f'TOTAL COULOMB {t_coul: .5f}')
-    print(f'TOTAL EXCHANGE {t_exch: .5f}')
+    if coul:
+        t_coul = np.sum(t_coul_num * qw * aim_w)
+        print(f'TOTAL COULOMB {t_coul: .5f}')
+        at_coul = np.zeros((at_nums.size))
+        for at in range(len(at_nums)):
+            at_c = np.sum(t_coul_num[atgrid_idx == at] * qw[atgrid_idx == at] * aim_w[atgrid_idx == at])
+            at_coul[at] = at_c
+        print('DEV ATOMIC VALUES for semianalitic ee terms')
+        print(at_coul)
+        print('CHECK: SUM OF ATOMIC VALUES')
+        print(np.sum(at_coul))
+
+
+    if x:
+        t_exch = np.sum(t_exch_num * qw * aim_w)
+        print(f'TOTAL EXCHANGE {t_exch: .5f}')
+        at_exch = np.zeros((at_nums.size))
+        for at in range(len(at_nums)):
+            at_x = np.sum(t_exch_num[atgrid_idx == at] * qw[atgrid_idx == at] * aim_w[atgrid_idx == at])
+            at_exch[at] = at_x
+        print('DEV ATOMIC VALUES for semianalitic ee terms')
+        print(at_exch)
+        print('CHECK: SUM OF ATOMIC VALUES')
+        print(np.sum(at_exch))
+
 
     # Compute atomic values
-    print(at_nums.size)
-    at_coul = np.zeros((at_nums.size))
-    at_exch = np.zeros((at_nums.size))
-    for at in range(len(at_nums)):
 
-        # print(np.sum(dens_grid[atgrid_idx == at] * qw[atgrid_idx == at] * aim_w[atgrid_idx == at]))
-        at_c = np.sum(t_coul_num[atgrid_idx == at] * qw[atgrid_idx == at] * aim_w[atgrid_idx == at])
-        at_x = np.sum(t_exch_num[atgrid_idx == at] * qw[atgrid_idx == at] * aim_w[atgrid_idx == at])
-        at_coul[at] = at_c
-        at_exch[at] = at_x
+    # assert 5 == 7
 
-    print('DEV ATOMIC VALUES for semianalitic ee terms')
-    print(at_coul)
-    print(at_exch)
-    print('CHECK: SUM OF ATOMIC VALUES')
-    print(np.sum(at_coul))
-    print(np.sum(at_exch))
-
-    return t_coul, t_exch, at_coul, at_exch
+    return t_coul, at_coul, t_exch, at_exch
 
 
 def ee_dft_energy(at_nums, xc_code, xc_type, rho, ao_dens, qw, aim_w, atgrid_idx, spin=0):
+    """"WIP: DFT energy to obtain AA contributions
+
+    Parameters:
+        rho: Has to include all elements of the density needed to call Libxc and compute the energy density
+        For Restricted calculations:
+            LDA: np.array (1,Npoints)  --> Density
+            GGA: np.array (4, Npoints) ---> Density, dx, dy, dz
+        For unrestricted calculations:
+            LDA tuple (alpha, beta):
+                alpha: np.array (1,Npoints)  --> Density
+                beta: np.array (1,Npoints)  --> Density
+            GGA: tuple (alpha, beta):
+                alpha: np.array (4, Npoints) ---> Density, dx, dy, dz
+                beta: np.array (4, Npoints) ---> Density, dx, dy, dz
+
+    """
+
+
 
     print('DEV dft exchange-correlation')
 
@@ -235,7 +336,7 @@ def ee_dft_energy(at_nums, xc_code, xc_type, rho, ao_dens, qw, aim_w, atgrid_idx
     print('XC CODE AND TYPE :', xc_code, xc_type)
     # prepare rho to pass to eval_xc. rho contains necessary components e.g. dens, grad
     # todo: we need to sort the spin too
-    # todo: we need to sort xc, x and c individually
+    # todo: we need to sort xc, x and c individually. Check if PySCF allows for them to be defined separately
     # rho includes necessary density quantities for each type of functional
     # LDA: density
     # GGA: density, grad_x, grad_y, grad_z
@@ -245,19 +346,49 @@ def ee_dft_energy(at_nums, xc_code, xc_type, rho, ao_dens, qw, aim_w, atgrid_idx
     # shape of ex, vxc, fxc and kxc different when spin=0 or 1
     r = eval_xc(xc_code, rho, spin=spin)
     xc_e_dens = r[0]
-    # rho[0] = density
-    xc_e = np.sum(xc_e_dens * rho[0] *  qw * aim_w)
+
+    # Todo: Double check if we always pass (,Npoints) or we could pass (1, Npoints)
+    # Atomic contributions
+    at_dft = np.zeros((at_nums.size))
+    # Unrestriced
+    if isinstance(rho, tuple):
+        print('unrestricted')
+        if len(rho[0].shape) == 1:
+            # LDA
+            print('lda')
+            xc_e = np.sum(xc_e_dens * (rho[0] + rho[1]) * qw * aim_w)
+            for at in range(len(at_nums)):
+                at_dft[at] = np.sum(xc_e_dens[atgrid_idx == at] *(rho[0] + rho[1])[atgrid_idx == at]* qw[atgrid_idx == at] * aim_w[atgrid_idx == at])
+
+        else:
+            # GGA
+            print('gga')
+            xc_e = np.sum(xc_e_dens * (rho[0][0] + rho[1][0]) * qw * aim_w)
+            for at in range(len(at_nums)):
+                at_dft[at] = np.sum(xc_e_dens[atgrid_idx == at] *(rho[0][0] + rho[1][0])[atgrid_idx == at]* qw[atgrid_idx == at] * aim_w[atgrid_idx == at])
+    # Restricted
+    elif isinstance(rho, np.ndarray):
+        print('restricted')
+        if len(rho.shape) == 1:
+            # LDA
+            print('lda')
+            xc_e = np.sum(xc_e_dens * rho *  qw * aim_w)
+            for at in range(len(at_nums)):
+                at_dft[at] = np.sum(xc_e_dens[atgrid_idx == at] *rho[atgrid_idx == at]* qw[atgrid_idx == at] * aim_w[atgrid_idx == at])
+
+        else:
+            print('gga')
+            xc_e = np.sum(xc_e_dens * rho[0] *  qw * aim_w)
+            for at in range(len(at_nums)):
+                at_dft[at] = np.sum(xc_e_dens[atgrid_idx == at] * rho[0][atgrid_idx == at] * qw[atgrid_idx == at] * aim_w[atgrid_idx == at])
+
+
     print('TOTAL DFT EXCHANGE-CORRELATION ENERGY : ', xc_e)
     # get HF exchange contribution and alpha, beta and omega parameters if necessary
     # Todo: for now only dealing with hybrid but not range separated
     coeff_hf = None
     if is_hybrid_xc(xc_code):
         coeff_hf = hybrid_coeff(xc_code, spin=spin)
-
-    # Atomic contributions
-    at_dft = np.zeros((at_nums.size))
-    for at in range(len(at_nums)):
-        at_dft[at] = np.sum(xc_e_dens[atgrid_idx == at] *rho[0][atgrid_idx == at]* qw[atgrid_idx == at] * aim_w[atgrid_idx == at])
 
     print(f'DEV ATOMIC VALUES for DFT functional {xc_code}')
     print(at_dft)
@@ -266,13 +397,29 @@ def ee_dft_energy(at_nums, xc_code, xc_type, rho, ao_dens, qw, aim_w, atgrid_idx
 
     return xc_e, at_dft, coeff_hf
 
-def ee_hf_energy_interatomic(at_nums, grid_coords1, grid_coords2, mo_grid1, mo_grid2, qw, aim_w1, aim_w2, atgrid_idx):
+
+
+# auxiliary ful(id1, p1, a, b, eval_mo_g1, eval_mo_g2, part, part2, grid1, points2, atgrid_a, atgrid_b, occupied_mo):
+def ee_hf_energy_interatomic(at_nums, grid_coords1, grid_coords2, mo_grid1, mo_grid2, qw, aim_w1, aim_w2, atgrid_idx, rij_v):
     """Function to compute Coulomb and HF exchange numerically"""
     print('DEV ee hf energy interatomic')
 
-    t_coul = np.zeros((len(at_nums), len(at_nums)))
-    t_exch = np.zeros((len(at_nums), len(at_nums)))
+    start = time.time()
+    coul_mat = np.zeros((len(at_nums), len(at_nums)))
+    t_exch_mat = np.zeros((len(at_nums), len(at_nums)))
 
+    # todo: change setting the cpus here
+    ncpus =4
+    # ## ncpus = int(os.environ.get('SLURM_CPUS_PER_TASK', default=1))
+    # if get_start_method(allow_none=True) is None:
+    #     print('inside fork')
+    #     set_start_method('fork')
+    #
+    # logging.info(f"USING {ncpus} CPUS")
+
+    # start = time.time()
+    # end = time.time()
+    # print("compilation time = ", end - start)
 
     for ia in range(len(at_nums)):
         # Get atomic grid for at A
@@ -284,78 +431,169 @@ def ee_hf_energy_interatomic(at_nums, grid_coords1, grid_coords2, mo_grid1, mo_g
             atgrid_idx_b = np.where(atgrid_idx == ib)[0]
             # id_p1 = index for the atomic grid a
             # p1 = index of the atomic grid a within the molecular grid
-            rij_small = 0
+            # rij_small = 0
+            pool = mp.Pool(processes=ncpus)
+            segments = []
             for id_p1, p1 in enumerate(atgrid_idx_a):
-                # Loop only for occupied orbitals
-                coul_dens = 0
-                exch_dens = 0
-                for i in range(mo_grid1.shape[0]):
-                    for j in range(mo_grid2.shape[0]):
-                        coul_dens += 2 * mo_grid1[i, p1] * mo_grid1[i, p1] * mo_grid2[j, atgrid_idx_b ] * mo_grid2[j, atgrid_idx_b]
-                        exch_dens += mo_grid1[i, p1] * mo_grid1[j, p1] * mo_grid2[j, atgrid_idx_b] * mo_grid2[i, atgrid_idx_b]
-                # Compute rij between i point index (p1) and atom b atgrid points
-                rij = np.linalg.norm(a_grid_coords[id_p1, :] - b_grid_coords, axis=-1)
+                # if ia == 0 and ib == 0 and id_p1 == 0:
+                #     start = time.time()
+                #     _two_elect_integral(id_p1, p1, mo_grid1, mo_grid2, atgrid_idx_b[0:1], a_grid_coords[0:1], b_grid_coords[0:1], qw[0:1], aim_w1[0:1], aim_w2[0:1])
+                #     end = time.time()
+                #     print("compilation time = ", end - start)
+                segments.append((id_p1, p1, mo_grid1, mo_grid2, atgrid_idx_b, a_grid_coords, b_grid_coords, qw, aim_w1, aim_w2, rij_v))
+            # print(len(segments))
+            # Parallel execution of _aux_6n_integral
+            results = pool.starmap_async(_two_elect_integral, segments).get()
+            pool.close()
+            pool.join()
 
-                coul_dens = coul_dens / rij
-                exch_dens = exch_dens / rij
-                # filter values of the points wit rij < 1e-3. If not filtered they add spurious big values
-                coul_dens[rij<1e-5] = 0
-                exch_dens[rij<1e-5] = 0
-                rij_small += rij[rij<1e-5].shape[0]
-                # Now integration starts. Get aim weights for p1 atgridA and all points in atgridB
-                coul_b = np.sum(coul_dens* qw[atgrid_idx_b] * aim_w2[atgrid_idx_b]) # integrated for atB
-                exch_b = np.sum(exch_dens* qw[atgrid_idx_b] * aim_w2[atgrid_idx_b]) # integrated for atB
-                coul = coul_b * qw[p1] * aim_w1[p1]
-                exch = exch_b * qw[p1] * aim_w1[p1]
-                if ia != ib:
-                    t_coul[ia, ib] += 2*coul
-                    t_exch[ia, ib] += 2*exch
-                    t_coul[ib, ia] = t_coul[ia, ib]
-                    t_exch[ib, ia] = t_exch[ia, ib]
-                else:
-                    t_coul[ia, ib] += coul
-                    t_exch[ia, ib] += exch
 
-            print(f'DEBUG: TOTAL NUMBER OF POINTS WITH Rij < 1e3 : {rij_small}')
+
+            # Add integral for r1
+            integral_coul = 0
+            integral_exch = 0
+            rij_small = 0
+            for out in results:
+                integral_coul += out[0]
+                integral_exch += out[1]
+                rij_small += out[2]
+
+            if ia != ib:
+                coul_mat[ia, ib] += 2*integral_coul
+                t_exch_mat[ia, ib] += 2*integral_exch
+                coul_mat[ib, ia] = coul_mat[ia, ib]
+                t_exch_mat[ib, ia] = t_exch_mat[ia, ib]
+            else:
+                coul_mat[ia, ib] += integral_coul
+                t_exch_mat[ia, ib] += integral_exch
+
+    print(f'DEBUG: TOTAL NUMBER OF POINTS WITH Rij < {rij_v} : {rij_small}')
     print('SUMMARY TWO ELECTRON NUMERICAL INTEGRATION')
     print(f'*** COULOMB PART ***')
-    print(t_coul)
+    print(coul_mat)
 
     # Q: If pure functional theoretically we don't need to compute it. However the bootleneck right now should be
     # the `for` loop so for the same price we can integrate both
     print(f'*** HF EXCHANGE PART ***')
-    print(-t_exch)
+    print(-t_exch_mat)
     print()
-    return t_coul, -t_exch
+    end = time.time()
+    print("computation time = ", end - start)
+
+    return coul_mat, -t_exch_mat,
+
+
+def ee_dft_energy_interatomic(at_nums, xc_code, xc_type, eval_mo_grid1, eval_mo_grad_grid1, qw, aim_w, atgrid_idx, aim_w_allp, spin=0):
+
+    print('DEV dft exchange-correlation interatomic')
+
+    # Todo: Check passed objects and write dimensions of arrays
+
+    # Here restricted/unrestriced. Development for Restricted only
+
+    # Initializer final array here
+    dft_pairwise = np.zeros((len(at_nums), len(at_nums)))
+    # GGA and hybrid  GGA with BOD gradient
+    if xc_type == 'GGA':
+        # Check MOs gradient
+        if not isinstance(eval_mo_grad_grid1, np.ndarray):
+            raise TypeError('MOs gradient should be passed as a numpy array')
+        elif eval_mo_grad_grid1.shape[0] != 3 and eval_mo_grad_grid1.shape[-1] != eval_mo_grid1.shape[0]:
+            raise ValueError(
+                'MOs gradient should be passed as a numpy array with dimensions (deriv coordinate, points, MOs)')
+        # Initialize grad_bod
+        grad_bod = np.zeros((len(at_nums), len(at_nums), 3, eval_mo_grad_grid1.shape[2]))
+
+    print(eval_mo_grad_grid1.shape)
+    # BOD density and GRAD BOD
+    bod = np.zeros((len(at_nums), len(at_nums), eval_mo_grid1.shape[1]))
+    for ia in range(len(at_nums)):
+        for ib in range(len(at_nums)):
+            # Loop over occupied i and j molecular orbitals
+            for i in range(eval_mo_grid1.shape[0]):
+                for j in range(eval_mo_grid1.shape[0]):
+                    sij_a = np.sum(eval_mo_grid1[i] * eval_mo_grid1[j]  * qw * aim_w_allp[ia] * aim_w)
+                    sij_b = np.sum(eval_mo_grid1[j] * eval_mo_grid1[i] * qw* aim_w_allp[ib]* aim_w)
+                    # 2 factor because restricted
+                    bod[ia, ib] +=  2 *(aim_w_allp[ia]* sij_b + aim_w_allp[ib] * sij_a)* eval_mo_grid1[i] * eval_mo_grid1[j]
+                    if xc_type == 'GGA':
+                        grad_bod[ia, ib] += 4*(aim_w_allp[ia] * sij_b + aim_w_allp[ib] * sij_a)[None, :] * eval_mo_grad_grid1[:, i, :] * eval_mo_grid1[None, j, :]
+
+    # Integrate BOD
+    # Add threshold between atoms?
+    int_bod = np.zeros((len(at_nums), len(at_nums)))
+    for ia, a in enumerate(at_nums):
+        for ib in range(ia + 1):
+            if ia != ib:
+                print('BOD int', ia, ib)
+                int_bod[ia, ib] = np.sum(bod[ia,ib] * qw* aim_w)
+                print(f"Integration BOD",  int_bod[ia, ib])
+
+    if xc_type == 'LDA':
+        # LDA with BOD density
+        dft_pairwise = np.zeros((len(at_nums), len(at_nums)))
+        for ia in range(len(at_nums)):
+            for ib in range(len(at_nums)):
+                if ia != ib:
+                    r = eval_xc(xc_code, bod[ia,ib], spin=0)
+                    dft_pairwise[ia, ib] = np.sum(r[0] *bod[ia, ib]* qw * aim_w**2)
+
+
+    # GGA with BOD gradient
+    elif xc_type == 'GGA':
+        # Pass the bod and the grad_bod to libxc
+        for ia in range(len(at_nums)):
+            for ib in range(len(at_nums)):
+                if ia != ib:
+                    bod_data = np.zeros((4, eval_mo_grid1.shape[1]))
+                    bod_data[0, :] = bod[ia,ib]
+                    bod_data[1:, :] = grad_bod[ia,ib]
+                    r = eval_xc(xc_code, bod_data, spin=0)
+                    dft_pairwise[ia, ib] = np.sum(r[0] * bod[ia, ib] * qw * aim_w**2)
+
+        print(dft_pairwise)
 
 
 
 
 
 
+    #metaGGA needs the laplacian: Not implemented
 
 
-def iqa_interatomic(APOSTBase, f_corr=None, f_exch=None):
+
+    return dft_pairwise, int_bod
+
+
+
+def iqa_interatomic(APOSTBase, f_corr=None, f_exch=None, ph2=0.162, rij_v=1e-5):
     """WIP: Function to obtain two electron dependent energy quantities and
     interatomic components for DFT xc energy based on the BOD method"""
 
     at_coords = APOSTBase.at_coords
     at_nums = np.array(APOSTBase.at_nums)
-
     # Grid info
-    grid_coords = APOSTBase.part.grid_coords
+    # Todo: fix calling _grid object to get the quadrature weights and maybe change the name to wp
     qw = APOSTBase.part._grid.quadrature_weights
     mol_w = APOSTBase.part.aim_w
     atgrid_idx = APOSTBase.part.grid_to_atom_idx
-    # mg = APOSTBase.part.grid_weights
 
     # Density info. For now only SD
+    # Todo: extend to Post-Hartree Fock methods
     thresh = 1e-8
     occ_coeff_a = APOSTBase.mo_coeff_a[:, APOSTBase.occ_a > thresh]
     occ_coeff_b = APOSTBase.mo_coeff_b[:, APOSTBase.occ_a > thresh]
     occ_a = APOSTBase.occ_a[APOSTBase.occ_a > thresh]
     occ_b = APOSTBase.occ_b[APOSTBase.occ_b > thresh]
-    dm = APOSTBase.dm_a
+    dm_a = APOSTBase.dm_a
+    dm_b = APOSTBase.dm_b
+
+    # First one electron terms
+    iqa_r_a = iqa_atomic(APOSTBase, f_corr=None, f_exch=None, ee_energy=False)
+    # Create holding variable for optional beta electrons results
+    iqa_r_b = {}
+    if APOSTBase.unrestr:
+        iqa_r_b = iqa_atomic(APOSTBase, f_corr=None, f_exch=None, ee_energy=False)
 
     # Compute interatomic terms for HF exchange/coulomb and DFT
     # for each point in grid_1 (Atom A) integrate all points in grid_2 (Atom B).
@@ -363,13 +601,17 @@ def iqa_interatomic(APOSTBase, f_corr=None, f_exch=None):
     # 3. Regenerate AIM weights
     # Rotate specific angle in rads
     # 1. Get points and compute the polar angles theta and phi
-    grid_coords1 = copy.copy(APOSTBase.part.grid_coords)
+    grid_coords1 = np.ascontiguousarray(copy.copy(APOSTBase.part.grid_coords))
     print('DEV HF 2 electron numerical integration')
     print(f'TOTAL NUMBER OF GRID1 POINTS: {grid_coords1.shape}')
 
+
+    # First phb values
     # Calling method to rotate the grid coords
+    # ph =  [(0,0.162), (0,0.18)]
     pha = 0
-    phb = 0.162
+    #phb = 0.162
+    phb = ph2
     # Note for the code:
     # APOST3D code: APOST3D generates the rotated grid not by rotating grid1 but by starting from scratch.
     # It generates distance and theta,fix for the same radial and angular points and then instead of passing 0 for pha and phb
@@ -378,17 +620,35 @@ def iqa_interatomic(APOSTBase, f_corr=None, f_exch=None):
     # Here because we rely on the Grid pyscf machinery to get the points and the atomic(quadrature) weights before rotating the points
     # we substract the atomic coordinates, and then rotate them again. After that we generate a second set of AIM weights for the rotated grid but keep the same
     # atomi(quadrature) weights.
-
-    grid_coords2, aim_n = APOSTBase.part.rotate_grid(at_coords, at_nums, pha, phb, dm)
-    print(f'DEV: ROTATED GRID AND AIM: {grid_coords2.shape}, {aim_n.shape}')
+    # Note: Grids are computed for total density not spin separated
+    grid_coords2, mol_w_2 = APOSTBase.part.rotate_grid(at_coords, at_nums, pha, phb, dm_a + dm_b)
+    print(f'DEV: ROTATED GRID AND AIM : {grid_coords2.shape}, {mol_w_2.shape}')
 
     # Evaluating molecular orbitals on Grid1 and Grid2
+    xc_code, xc_type = APOSTBase.xc_code
+    if xc_type == 'LDA' or xc_type is None:
+        ao_dens = eval_ao(APOSTBase._mol, APOSTBase.part.grid_coords, deriv=0)
+        # Getting rho components for the AA DFT terms
+        rho = eval_rho(APOSTBase._mol, ao_dens, dm_a, xctype=xc_type)
+        eval_ao_grid1 = ao_dens
+        eval_mo_grad_grid1 = None
+    elif xc_type == 'GGA':
+        # Getting density evaluated on the AO basis and on the points
+        ao_dens = eval_ao(APOSTBase._mol, APOSTBase.part.grid_coords, deriv=1)
+        # Getting rho components for the AA DFT terms
+        # rho, dx_rho, dy_rho, dz_rho = eval_rho(APOSTBase._mol, ao_dens, dm, xctype='GGA')
+        rho = eval_rho(APOSTBase._mol, ao_dens, dm_a, xctype=xc_type)
+        # ao_dens returns array 4,N_AO with 4 including rho, dx, dy, dz.
+        eval_ao_grid1 = ao_dens[0, :,:]
+        eval_ao_grad_grid1 = ao_dens[1:, :, :]
+        eval_mo_grad_grid1 = np.einsum('ni, opn->oip ', occ_coeff_a, eval_ao_grad_grid1)
+    else:
+        raise TypeError(f"Unknown XC type: {xc_type}")
 
-    eval_ao_grid1 = eval_ao(APOSTBase._mol, grid_coords1, deriv=0)
     eval_ao_grid2 = eval_ao(APOSTBase._mol, grid_coords2, deriv=0)
     # Note: DEV happening with coeff a because restricted closed shell. Todo:  extend to beta
-    eval_mo_grid1 = np.einsum('pa,ai->ip ', eval_ao_grid1, occ_coeff_a)
-    eval_mo_grid2 = np.einsum('pa,ai->ip ', eval_ao_grid2, occ_coeff_a)
+    eval_mo_grid1 = np.ascontiguousarray(np.einsum('pa,ai->ip ', eval_ao_grid1, occ_coeff_a))
+    eval_mo_grid2 = np.ascontiguousarray(np.einsum('pa,ai->ip ', eval_ao_grid2, occ_coeff_a))
     dens_grid_1 = np.zeros((eval_mo_grid1.shape[1]))
     dens_grid_2 = np.zeros((eval_mo_grid2.shape[1]))
     for i in range(eval_mo_grid1.shape[0]):
@@ -396,40 +656,176 @@ def iqa_interatomic(APOSTBase, f_corr=None, f_exch=None):
         dens_grid_2 += eval_mo_grid2[i, :] * eval_mo_grid2[i, :] * occ_a[i]
 
     total_elect_int_1 = np.sum(dens_grid_1 * mol_w * qw)
-    total_elect_int_2 = np.sum(dens_grid_2 * qw * aim_n)
+    total_elect_int_2 = np.sum(dens_grid_2 * mol_w_2 * qw)
     print('CHECK TOTAL ELECT INT 1', total_elect_int_1)
     print('CHECK TOTAL ELECT INT 1', total_elect_int_2)
 
 
-    coul_n, exch_n = ee_hf_energy_interatomic(at_nums, grid_coords1, grid_coords2, eval_mo_grid1, eval_mo_grid2, qw, mol_w,aim_n, atgrid_idx)
+    if f_corr and f_exch:
+        # Todo: Same problem as with iqa_atomic, we need to specify x and c separately. Note: see when we do a custom functional
+        # Get the AA DFT terms
+        iqa_r_a['t_dft_c'], iqa_r_a['at_dft_c'], coeff_mix = ee_dft_energy(at_nums, xc_code, xc_type, rho, ao_dens, qw, mol_w, atgrid_idx)
+        iqa_r_a['t_dft_x'], iqa_r_a['at_dft_x'], coeff_mix = ee_dft_energy(at_nums, xc_code, xc_type, rho, ao_dens, qw, mol_w, atgrid_idx)
+        # Get the AB DFT terms
+        iqa_r_a['at_dft_c'], iqa_r_a['bod'] = ee_dft_energy_interatomic(at_nums, xc_code, xc_type, eval_mo_grid1, eval_mo_grad_grid1, qw, mol_w, atgrid_idx, APOSTBase.part.aim_w_allp)
+        iqa_r_a['at_dft_c'], iqa_r_a['bod'] = ee_dft_energy_interatomic(at_nums, xc_code, xc_type, eval_mo_grid1, eval_mo_grad_grid1, qw, mol_w, atgrid_idx, APOSTBase.part.aim_w_allp)
+        # Note: the way the code works Coulomb and HF Exchange are computed simultaneously, thus, even if we may not need HF exchange it is computed
+        iqa_r_a['at_coul'], iqa_r_a['at_exch'] = ee_hf_energy_interatomic(at_nums,
+                                                                      grid_coords1,
+                                                                      grid_coords2,
+                                                                      eval_mo_grid1,
+                                                                      eval_mo_grid2,
+                                                                      qw,
+                                                                      mol_w,
+                                                                      mol_w_2,
+                                                                      atgrid_idx,
+                                                                      rij_v=rij_v)
+        iqa_r_a['t_coul'], iqa_r_a['t_exch'] = np.sum(iqa_r_a['at_coul']), np.sum(iqa_r_a['at_exch'])
+        if coeff_mix:
+            iqa_r_a['t_exch'] = iqa_r_a['t_exch'] * coeff_mix
+        else:
+            iqa_r_a.pop('t_exch')
+            iqa_r_a.pop('at_exch')
 
-    #analytic value for 2elec integrals coulomb and hf exchange
-    two_eint = APOSTBase._mol.intor('int2e')
-    coul_1 = np.einsum("ab,abcd,cd->ad", dm, two_eint, dm)
-    exch_1 = np.einsum("ac,abcd,bd->ad", dm, two_eint, dm)
-    coul_analyt = 0.5 * np.sum(np.einsum("ad->a", coul_1))
-    exch_analyt = -0.25 * np.sum(np.einsum("ad->a", exch_1))
 
-    iqa_inter_r = {}
-    iqa_inter_r['t_coul'] = np.sum(np.triu(coul_n))
-    iqa_inter_r['t_exch'] = np.sum(np.triu(exch_n))
+    elif f_exch:
+        # Get the AA DFT terms
+        iqa_r_a['t_dft_xc'], iqa_r_a['at_dft_xc'], coeff_mix = ee_dft_energy(at_nums, xc_code, xc_type,
+                                                                       rho, ao_dens, qw, mol_w,
+                                                                       atgrid_idx)
+        # Get the AB DFT terms
+        iqa_r_a['at_dft_xc'], iqa_r_a['bod'] = ee_dft_energy_interatomic(at_nums, xc_code, xc_type,
+                                                                    eval_mo_grid1,
+                                                                    eval_mo_grad_grid1, qw, mol_w,
+                                                                    atgrid_idx,
+                                                                    APOSTBase.part.aim_w_allp)
+        # Note: the way the code works Coulomb and HF Exchange are computed simultaneously, thus, even if we may not need HF exchange it is computed
+        iqa_r_a['at_coul'], iqa_r_a['at_exch'] = ee_hf_energy_interatomic(at_nums,
+                                                                      grid_coords1,
+                                                                      grid_coords2,
+                                                                      eval_mo_grid1,
+                                                                      eval_mo_grid2,
+                                                                      qw,
+                                                                      mol_w,
+                                                                      mol_w_2,
+                                                                      atgrid_idx,
+                                                                      rij_v=rij_v)
+        iqa_r_a['t_coul'], iqa_r_a['t_exch'] = np.sum(iqa_r_a['at_coul']), np.sum(iqa_r_a['at_exch'])
+        if coeff_mix:
+            iqa_r_a['t_exch'] = iqa_r_a['t_exch'] * coeff_mix
+        else:
+            iqa_r_a.pop('t_exch')
+            iqa_r_a.pop('at_exch')
 
-    print('TOTAL ENERGY SUM OF COMPONENTS ')
-    print('COULOMB', f"{iqa_inter_r['t_coul']: .5f}")
-    print(f'COULOMB (PySCF/Libcint): {coul_analyt: .5f}')
-    diff_c = iqa_inter_r['t_coul'] - coul_analyt
-    print('DIFF ', diff_c)
-    print('DIFF (kcal/mol) ', diff_c / 0.0015936014376406278)
+    elif not APOSTBase.dft:
+        iqa_r_a['at_coul'], iqa_r_a['at_exch'] = ee_hf_energy_interatomic(at_nums,
+                                                                      grid_coords1,
+                                                                      grid_coords2,
+                                                                      eval_mo_grid1,
+                                                                      eval_mo_grid2,
+                                                                      qw,
+                                                                      mol_w,
+                                                                      mol_w_2,
+                                                                      atgrid_idx,
+                                                                      rij_v=rij_v)
+        iqa_r_a['t_coul'], iqa_r_a['t_exch'] = np.sum(iqa_r_a['at_coul']), np.sum(iqa_r_a['at_exch'])
+
+
+    #  Print Summary
+    logging.info('Summary IQA')
+    print(f"Nucleus-Nucleus repulsion energy: {iqa_r_a['t_nn']:.5f}")
+    # print('Nucleus-Nucleus repulsion energy (PySCF/Libcint): ', nn_int)
+    # diff = abs(iqa_r_a['nn_total'] - nn_int)
+    # print('DIFF (kcal/mol) ', diff / 0.0015936014376406278)
+
+    print('------------------------------------')
+    print(f"Electron-Nucleus attraction energy: {iqa_r_a['t_en']:.5f}")
+    print(f'Electron-Nucleus attraction energy (PySCF/Libcint): {iqa_r_a["en_analyt"]: .5f}')
+    diff = abs(iqa_r_a['t_en'] - iqa_r_a['en_analyt'])
+    print('DIFF (kcal/mol) ', diff / 0.0015936014376406278)
     print()
-    print('HF EXCHANGE', f"{iqa_inter_r['t_exch']: .5f}")
-    print(f'HF EXCHANGE (PySCF/Libcint): {exch_analyt: .5f}')
-    diff_x = iqa_inter_r['t_exch'] - exch_analyt
-    print('DIFF', diff_x )
-    print('DIFF (kcal/mol) ', diff_x / 0.0015936014376406278)
-    print('TOTAL DIFF', (diff_c + diff_x))
-    print('TOTAL DIFF (kcal/mol)', (diff_c + diff_x)/ 0.0015936014376406278)
+    print("Atomic Electron-Nucleus attraction energy (Condensed):")
+    for idx, at in enumerate(at_nums):
+        print(f"{at}   {iqa_r_a['at_en_cond'][idx]: .5f}")
+    print('------------------------------------')
+    print(f"Kinetic energy:  {iqa_r_a['t_kin']:.5f}")
+    print(f'Kinetic energy(PySCF/Libcint):  {iqa_r_a["kin_analyt"]: .5f}')
+    diff = abs(iqa_r_a['t_kin'] - iqa_r_a['kin_analyt'])
+    print('DIFF (kcal/mol) ', diff / 0.0015936014376406278)
+    print()
+    print('Atomic Kinetic energy:')
+    for idx, at in enumerate(at_nums):
+        print(f"{at}   {iqa_r_a['at_kin'][idx]: .5f}")
 
-def iqa_atomic(APOSTBase, f_corr=None, f_exch=None):
+    print('------------------------------------')
+    print('Interatomic Electron-Electron interaction energy')
+    print()
+    print(f"Coulomb energy: {iqa_r_a['t_coul']: .5f}", )
+    print(f'Coulomb energy(PySCF/Libcint):  {iqa_r_a["coul_analyt"]: .5f}')
+    diff = abs(iqa_r_a['t_coul'] - iqa_r_a["coul_analyt"])
+    print('DIFF (kcal/mol) ', diff / 0.0015936014376406278)
+    print()
+    print('Full Coulomb energy decomposition:')
+
+
+
+    for idx, at in enumerate(at_nums):
+        print(f"{at}   {iqa_r_a['at_coul'][idx]: .5f}")
+    print()
+    if f_exch and f_corr:
+        print(f"DTF Exchange energy: {iqa_r_a['t_dft_x']: .5f}")
+        print(f"DTF Correlation energy: {iqa_r_a['t_dft_c']: .5f}")
+        print()
+        print('Atomic DFT Exchange energy:')
+        for idx, at in enumerate(at_nums):
+            print(f"{at}   {iqa_r_a['at_dft_x'][idx]: .5f}")
+        print('Atomic DFT Correlation energy:')
+        for idx, at in enumerate(at_nums):
+            print(f"{at}   {iqa_r_a['at_dft_c'][idx]: .5f}")
+
+    if f_exch and not f_corr:
+        print(f"DTF Exchange-Correlation energy: {iqa_r_a['t_dft_xc']: .5f}")
+        print()
+        print('Atomic DFT Exchange-Correlation energy:')
+        for idx, at in enumerate(at_nums):
+            print(f"{at}   {iqa_r_a['at_dft_xc'][idx]: .5f}")
+
+    if 'x_hf_total' in iqa_r_a.keys():
+        print(f"HF Exchange: {iqa_r_a['t_exch']: .5f}")
+        print(f'HF Exchange energy(PySCF/Libcint):  {exch_analyt: .5f}')
+        diff = abs(iqa_r_a['t_exch'] - exch_analyt)
+        print('DIFF (kcal/mol) ', diff / 0.0015936014376406278)
+        print('COEFF MIX :', coeff_mix)
+        print()
+        print('Atomic HF Exchange energy:')
+        for idx, at in enumerate(at_nums):
+            print(f"{at}   {iqa_r_a['at_exch'][idx]: .5f}")
+
+
+    total_sum_energy = 0
+    for k in iqa_r_a.keys():
+        if k.startswith('t_'):
+            total_sum_energy += iqa_r_a[k]
+
+    print('TOTAL ENERGY (SUM OF COMPONENTS):', total_sum_energy)
+    print('TOTAL ENERGY (PySCF):', APOSTBase.energy)
+    print('DIFF (AU) :', total_sum_energy - APOSTBase.energy)
+    print('DIFF (Kcal) :', (total_sum_energy - APOSTBase.energy) / 0.0015936014376406278)
+    if not ee_energy:
+        print('WARNING: EE energy not calculated')
+
+    assert 5 ==6
+
+
+    return iqa_r_a
+
+
+
+# def iqa_atomic(APOSTBase, f_corr=None, f_exch=None, ee_hf=True):
+# Note: To add flexibility in the future and for testing purposes we could add an argument to specify if we only want the alpha/beta electrons computed
+# independently of the calculation
+def iqa_atomic(APOSTBase, ee_hf=True):
+
     """WIP: Function to obtain one electron dependent energy quantities"""
 
     # NN energy: Coulomb formula of charge repulsion-Analytic (Done)
@@ -439,7 +835,6 @@ def iqa_atomic(APOSTBase, f_corr=None, f_exch=None):
     # DFT exchange-correlation (Done)
 
 
-    print('DEV" ATOMIC IQA CALC')
     # Molecule info
     at_coords = APOSTBase.at_coords
     at_nums = np.array(APOSTBase.at_nums)
@@ -451,179 +846,226 @@ def iqa_atomic(APOSTBase, f_corr=None, f_exch=None):
     qw = APOSTBase.part._grid.quadrature_weights
     mol_w = APOSTBase.part.aim_w
     atgrid_idx = APOSTBase.part.grid_to_atom_idx
-    mg = APOSTBase.part.grid_weights
+    # mg = APOSTBase.part.grid_weights
 
     #Orbitals and density
+    # Todo: extend to post hartree fock methods
     # For now doing SD
     thresh = 1e-8
-    occ_coeff = APOSTBase.mo_coeff_a[:, APOSTBase.occ_a > thresh]
-    occ = APOSTBase.occ_a[APOSTBase.occ_a > thresh]
-    dm = APOSTBase.dm_a
+    occ_coeff_a = APOSTBase.mo_coeff_a[:, APOSTBase.occ_a > thresh]
+    occ_coeff_b = APOSTBase.mo_coeff_b[:, APOSTBase.occ_b > thresh]
+    occ_a = APOSTBase.occ_a[APOSTBase.occ_a > thresh]
+    occ_b = APOSTBase.occ_b[APOSTBase.occ_b > thresh]
+    dm_a = APOSTBase.dm_a
+    dm_b = APOSTBase.dm_b
 
-    # Dens info
+    # Density/AO/MOs on the grid and DFT
     xc_code, xc_type = APOSTBase.xc_code
-    dens_grid = APOSTBase.part.dens_grid
-    # ao_dens = APOSTBase.part.ao_eval_grid
-    if xc_type == 'LDA':
+    if xc_type == 'LDA' or xc_type is None:
         ao_dens = eval_ao(APOSTBase._mol, APOSTBase.part.grid_coords, deriv=0)
     elif xc_type == 'GGA':
-        ao_dens = eval_ao(APOSTBase._mol, APOSTBase.part.grid_coords, deriv=2)
+        ao_dens = eval_ao(APOSTBase._mol, APOSTBase.part.grid_coords, deriv=1)
     else:
         raise TypeError(f"Unknown XC type: {xc_type}")
-    # print(np.sum(dens_grid *  APOSTBase.part._grid.quadrature_weights * APOSTBase.part.aim_w))
-    # getting density and derivatives for dft functional
-    # rho, dx_rho, dy_rho, dz_rho = eval_rho(APOSTBase._mol, ao_dens, dm, xctype='LDA')
-    rho = eval_rho(APOSTBase._mol, ao_dens, dm, xctype=xc_type)
-    print(rho.shape)
 
+    if APOSTBase.unrestr:
+        if APOSTBase.dft:
+            rho_a = eval_rho(APOSTBase._mol, ao_dens, dm_a, xctype=xc_type)
+            rho_b = eval_rho(APOSTBase._mol, ao_dens, dm_b, xctype=xc_type)
+        else:
+            rho_a = eval_rho(APOSTBase._mol, ao_dens, dm_a)
+            rho_b = eval_rho(APOSTBase._mol, ao_dens, dm_b)
+    else:
+        if APOSTBase.dft:
+            rho_a = eval_rho(APOSTBase._mol, ao_dens, dm_a, xctype=xc_type)
+        else:
+            rho_a = eval_rho(APOSTBase._mol, ao_dens, dm_a)
 
 
     print('CHECK ATOMIC CHARGES')
+    # For now only rho_a. Todo: Computing charges should be a standalone function called from different modules
     pop_all = []
     for ia in range(len(at_nums)):
-        pop = np.sum(dens_grid[atgrid_idx == ia] * qw[atgrid_idx == ia] * mol_w[atgrid_idx == ia])
+        if xc_type == 'GGA':
+            pop = np.sum(rho_a[0][atgrid_idx == ia] * qw[atgrid_idx == ia] * mol_w[atgrid_idx == ia])
+        else:
+            pop = np.sum(rho_a[atgrid_idx == ia] * qw[atgrid_idx == ia] * mol_w[atgrid_idx == ia])
         pop_all.append(pop)
         print(f'POPULATION AT {ia +1} = {pop: .5f}')
     print(f'CHECK SUM POPULATION = {np.sum(pop_all):.5f}')
 
-
-
-   # EN
-    kin_analyt =  np.trace(np.dot(dm, APOSTBase._mol.intor_symmetric('int1e_kin')))
-    en_analyt = np.trace(np.dot(dm, APOSTBase._mol.intor_symmetric('int1e_nuc')))
-    # 2elec coulomb and HF exchange
+    iqa_r_a = {}
+    iqa_r_b = {}
     two_eint = APOSTBase._mol.intor('int2e')
-    coul_1 = np.einsum("ab,abcd,cd->ad", dm, two_eint, dm)
-    exch_1 = np.einsum("ac,abcd,bd->ad", dm, two_eint, dm)
-    coul_analyt = 0.5 * np.sum(np.einsum("ad->a", coul_1))
-    exch_analyt = -0.25 * np.sum(np.einsum("ad->a", exch_1))
+    if APOSTBase.unrestr:
+        iqa_r_b['kin_analyt'] = np.trace(np.dot(dm_b + dm_a, APOSTBase._mol.intor_symmetric('int1e_kin')))
+        iqa_r_b['en_analyt'] = np.trace(np.dot(dm_b +dm_a, APOSTBase._mol.intor_symmetric('int1e_nuc')))
+        # 2elec coulomb and HF exchange
+        coul_1_b = np.einsum("ab,abcd,cd->ad", dm_a + dm_b, two_eint, dm_a + dm_b)
+        exch_1_b = np.einsum("ac,abcd,bd->ad", dm_b, two_eint, dm_b)
+        exch_1_a = np.einsum("ac,abcd,bd->ad", dm_a, two_eint, dm_a)
+        iqa_r_b['coul_analyt'] = 0.5 * np.sum(np.einsum("ad->a", coul_1_b))
+        iqa_r_b['exch_analyt'] = -0.5 * np.sum(np.einsum("ad->a", exch_1_b))
+        iqa_r_a['exch_analyt'] = -0.5 * np.sum(np.einsum("ad->a", exch_1_a))
+    else:
+        # EN
+        iqa_r_a['kin_analyt'] = np.trace(np.dot(dm_a, APOSTBase._mol.intor_symmetric('int1e_kin')))
+        iqa_r_a['en_analyt'] = np.trace(np.dot(dm_a, APOSTBase._mol.intor_symmetric('int1e_nuc')))
+        # 2elec coulomb and HF exchange
+        coul_1_a = np.einsum("ab,abcd,cd->ad", dm_a, two_eint, dm_a)
+        exch_1_a = np.einsum("ac,abcd,bd->ad", dm_a, two_eint, dm_a)
+        iqa_r_a['coul_analyt'] = 0.5 * np.sum(np.einsum("ad->a", coul_1_a))
+        iqa_r_a['exch_analyt'] = -0.25 * np.sum(np.einsum("ad->a", exch_1_a))
 
-    iqa_r = {}
 
-    iqa_r['t_nn'] = nn_energy(at_nums, at_coords)
-    iqa_r['t_en'], iqa_r['at_en'], iqa_r['at_en_cond'] = en_energy(at_nums, at_coords, grid_coords, dens_grid, qw, mol_w, atgrid_idx)
-    iqa_r['t_kin'], iqa_r['at_kin'] =  kin_energy(at_nums, at_coords, APOSTBase._mol, dm, grid_coords, qw, mol_w, atgrid_idx)
-    iqa_r['t_coul'], iqa_r['t_exch'], iqa_r['at_coul'], iqa_r['at_exch'] =  ee_hf_energy(at_nums, at_coords, APOSTBase._mol,dm, grid_coords, APOSTBase.part.ao_eval_grid, occ_coeff, occ, qw, mol_w, atgrid_idx)
+    iqa_r_a['t_nn'] = nn_energy(at_nums, at_coords)
 
-
-    # iqa_r['t_xc'] = ee_dft_energy(at_nums, xc_code, xc_type, rho, ao_dens, qw, mol_w, atgrid_idx)
-    # assuming dft_corr and dft_exch specified together
-    if f_corr and f_exch:
-        iqa_r['t_coul'], iqa_r['t_exch'], iqa_r['at_coul'], iqa_r['at_exch'] = ee_hf_energy(at_nums, at_coords, APOSTBase._mol,dm, grid_coords, APOSTBase.part.ao_eval_grid, occ_coeff, occ, qw, mol_w, atgrid_idx)
-        iqa_r['t_dft_c'], iqa_r['at_dft_c'], coeff_mix = ee_dft_energy(at_nums, xc_code, xc_type, rho, ao_dens, qw, mol_w, atgrid_idx)
-        iqa_r['t_dft_x'], iqa_r['at_dft_x'], coeff_mix = ee_dft_energy(at_nums, xc_code, xc_type, rho, ao_dens, qw, mol_w, atgrid_idx)
-        if coeff_mix:
-            iqa_r['t_exch'] = iqa_r['t_exch'] * coeff_mix
-            iqa_r['at_coul'] = iqa_r['at_coul'] * coeff_mix
-            # iqa_r['t_dft_x'] = iqa_r['t_dft_x'] * (1-coeff_mix)
-            # iqa_r['at_dft_x'] = iqa_r['at_dft_x'] * (1-coeff_mix)
+    if APOSTBase.unrestr:
+        if xc_type == 'GGA':
+            iqa_r_b['t_en'], iqa_r_b['at_en'], iqa_r_b['at_en_cond'] = en_energy(at_nums, at_coords, grid_coords, rho_a[0] + rho_b[0], qw, mol_w, atgrid_idx)
         else:
-            iqa_r.pop('t_exch')
-            iqa_r.pop('at_exch')
+            iqa_r_b['t_en'], iqa_r_b['at_en'], iqa_r_b['at_en_cond'] = en_energy(at_nums, at_coords, grid_coords, rho_a + rho_b, qw, mol_w, atgrid_idx)
+        iqa_r_b['t_kin'], iqa_r_b['at_kin'] =  kin_energy(at_nums, at_coords, APOSTBase._mol, dm_a + dm_b, grid_coords, qw, mol_w, atgrid_idx)
+        if ee_hf:
+            # first Coulomb because only need to compute it once with alpha and beta combined
+            occ_coeff = np.zeros((occ_coeff_b.shape[0], occ_coeff_a.shape[1] + occ_coeff_b.shape[1]))
+            occ_coeff[:, : occ_coeff_a.shape[1]] = occ_coeff_a
+            occ_coeff[:, occ_coeff_a.shape[1]:] = occ_coeff_b
+            occs = np.zeros((occ_a.shape[0] + occ_b.shape[0]))
+            occs[: occ_a.shape[0]] = occ_a
+            occs[occ_a.shape[0]:] = occ_b
+            iqa_r_b['t_coul'], iqa_r_b['at_coul'], _, _ =  ee_hf_energy(at_nums,
+                                                                     at_coords,
+                                                                     APOSTBase._mol,
+                                                                     dm_b+dm_a,
+                                                                     grid_coords,
+                                                                     APOSTBase.part.ao_eval_grid,
+                                                                     occ_coeff,
+                                                                     occs,
+                                                                     qw,
+                                                                     mol_w,
+                                                                     atgrid_idx,
+                                                                     coul=True,
+                                                                     x=False)
+            if xc_type != 'LDA':
+                # HF exchange for alpha and beta separately
+                _, _, iqa_r_a['t_exch'], iqa_r_a['at_exch'] = ee_hf_energy(at_nums,
+                                                                          at_coords,
+                                                                          APOSTBase._mol,
+                                                                          dm_a,
+                                                                          grid_coords,
+                                                                          APOSTBase.part.ao_eval_grid,
+                                                                          occ_coeff_a,
+                                                                          occ_a,
+                                                                          qw,
+                                                                          mol_w,
+                                                                          atgrid_idx,
+                                                                          coul=False,
+                                                                          x=True)
+                _, _, iqa_r_b['t_exch'], iqa_r_b['at_exch'] = ee_hf_energy(at_nums,
+                                                                            at_coords,
+                                                                            APOSTBase._mol,
+                                                                            dm_b,
+                                                                            grid_coords,
+                                                                            APOSTBase.part.ao_eval_grid,
+                                                                            occ_coeff_b,
+                                                                            occ_b,
+                                                                            qw,
+                                                                            mol_w,
+                                                                            atgrid_idx,
+                                                                            coul=False,
+                                                                            x=True)
 
-    elif f_exch:
-        iqa_r['t_coul'], iqa_r['t_exch'], iqa_r['at_coul'], iqa_r['at_exch'] = ee_hf_energy(at_nums, at_coords, APOSTBase._mol,dm, grid_coords, APOSTBase.part.ao_eval_grid, occ_coeff, occ, qw, mol_w, atgrid_idx)
-        iqa_r['t_dft_xc'], iqa_r['at_dft_xc'], coeff_mix = ee_dft_energy(at_nums, xc_code, xc_type,rho, ao_dens, qw, mol_w, atgrid_idx)
-        if coeff_mix:
-            # Scaling HF exchange
-            iqa_r['t_exch'] = iqa_r['t_exch'] * coeff_mix
-            iqa_r['at_coul'] = iqa_r['at_coul'] * coeff_mix
-            # iqa_r['t_dft_xc'] = iqa_r['t_dft_xc'] * (1 - coeff_mix)
-            # iqa_r['at_dft_xc'] = iqa_r['at_dft_xc'] * (1 - coeff_mix)
-        else:
-            iqa_r.pop('t_exch')
-            iqa_r.pop('at_exch')
-    elif not APOSTBase.dft:
-        iqa_r['t_coul'], iqa_r['t_exch'], iqa_r['at_coul'], iqa_r['at_exch'] = ee_hf_energy(at_nums,
-                                                                                            at_coords,
-                                                                                            APOSTBase._mol,
-                                                                                            dm,
-                                                                                            grid_coords,
-                                                                                            APOSTBase.part.ao_eval_grid,
-                                                                                            occ_coeff,
-                                                                                            occ, qw,
-                                                                                            mol_w,
-                                                                                            atgrid_idx)
 
     else:
-        raise ValueError(f'Need to specify an exchange functional too. Got {f_exch}')
+        iqa_r_b['t_nn'] = nn_energy(at_nums, at_coords)
+        if xc_type == 'GGA':
+            iqa_r_a['t_en'], iqa_r_a['at_en'], iqa_r_a['at_en_cond'] = en_energy(at_nums, at_coords, grid_coords, rho_a[0], qw, mol_w, atgrid_idx)
+        else:
+            iqa_r_a['t_en'], iqa_r_a['at_en'], iqa_r_a['at_en_cond'] = en_energy(at_nums, at_coords, grid_coords, rho_a, qw, mol_w, atgrid_idx)
+        iqa_r_a['t_kin'], iqa_r_a['at_kin'] = kin_energy(at_nums, at_coords, APOSTBase._mol, dm_a, grid_coords, qw, mol_w, atgrid_idx)
+        if ee_hf:
+            iqa_r_a['t_coul'],  iqa_r_a['at_coul'], _, _ = ee_hf_energy(at_nums,
+                                                                        at_coords,
+                                                                        APOSTBase._mol,
+                                                                        dm_a,
+                                                                        grid_coords,
+                                                                        APOSTBase.part.ao_eval_grid,
+                                                                        occ_coeff_a,
+                                                                        occ_a,
+                                                                        qw,
+                                                                        mol_w,
+                                                                        atgrid_idx,
+                                                                        coul=True,
+                                                                        x=False)
+            if xc_type != 'LDA':
+                _, _, iqa_r_a['t_exch'], iqa_r_a['at_exch'] = ee_hf_energy(at_nums,
+                                                                           at_coords,
+                                                                           APOSTBase._mol,
+                                                                           dm_a,
+                                                                           grid_coords,
+                                                                           APOSTBase.part.ao_eval_grid,
+                                                                           occ_coeff_a,
+                                                                           occ_a,
+                                                                           qw,
+                                                                           mol_w,
+                                                                           atgrid_idx,
+                                                                           coul=False,
+                                                                           x=True)
 
 
-    logging.info('Summary IQA')
-    print(f"Nucleus-Nucleus repulsion energy: {iqa_r['t_nn']:.5f}")
-    # print('Nucleus-Nucleus repulsion energy (PySCF/Libcint): ', nn_int)
-    # diff = abs(iqa_r['nn_total'] - nn_int)
-    # print('DIFF (kcal/mol) ', diff / 0.0015936014376406278)
+    # Todo: fix this because we need to be able to separate both contributions and below just repeats the same calc
+    # Fixme: For now commented but it might be needed to deal with custom DFT functionals
+    # if f_corr and f_exch:
+    #     iqa_r_a['t_coul'], iqa_r_a['t_exch'], iqa_r_a['at_coul'], iqa_r_a['at_exch'] = ee_hf_energy(at_nums, at_coords, APOSTBase._mol,dm, grid_coords, APOSTBase.part.ao_eval_grid, occ_coeff, occ, qw, mol_w, atgrid_idx)
+    #     iqa_r_a['t_dft_c'], iqa_r_a['at_dft_c'], coeff_mix = ee_dft_energy(at_nums, xc_code, xc_type, rho, ao_dens, qw, mol_w, atgrid_idx)
+    #     iqa_r_a['t_dft_x'], iqa_r_a['at_dft_x'], coeff_mix = ee_dft_energy(at_nums, xc_code, xc_type, rho, ao_dens, qw, mol_w, atgrid_idx)
+    #     if coeff_mix:
+    #         iqa_r_a['t_exch'] = iqa_r_a['t_exch'] * coeff_mix
+    #         iqa_r_a['at_coul'] = iqa_r_a['at_coul'] * coeff_mix
+    #         # iqa_r_a['t_dft_x'] = iqa_r_a['t_dft_x'] * (1-coeff_mix)
+    #         # iqa_r_a['at_dft_x'] = iqa_r_a['at_dft_x'] * (1-coeff_mix)
+    #     else:
+    #         iqa_r_a.pop('t_exch')
+    #         iqa_r_a.pop('at_exch')
 
-    print('------------------------------------')
-    print(f"Electron-Nucleus attraction energy: {iqa_r['t_en']:.5f}" )
-    print(f'Electron-Nucleus attraction energy (PySCF/Libcint): {en_analyt: .5f}')
-    diff = abs(iqa_r['t_en'] - en_analyt)
-    print('DIFF (kcal/mol) ', diff / 0.0015936014376406278)
-    print()
-    # assert 5 ==6
-    print("Atomic Electron-Nucleus attraction energy (Condensed):")
-    for idx, at in enumerate(at_nums):
-        print(f"{at}   {iqa_r['at_en_cond'][idx]: .5f}")
-    print('------------------------------------')
-    print(f"Kinetic energy:  {iqa_r['t_kin']:.5f}" )
-    print(f'Kinetic energy(PySCF/Libcint):  {kin_analyt: .5f}')
-    diff = abs(iqa_r['t_kin'] - kin_analyt)
-    print('DIFF (kcal/mol) ', diff / 0.0015936014376406278)
-    print()
-    print('Atomic Kinetic energy:')
-    for idx, at in enumerate(at_nums):
-        print(f"{at}   {iqa_r['at_kin'][idx]: .5f}")
-    print('------------------------------------')
-    print('Electron-Electron interaction energy')
-    print()
-    print(f"Coulomb energy: {iqa_r['t_coul']: .5f}", )
-    print(f'Coulomb energy(PySCF/Libcint):  {coul_analyt: .5f}')
-    diff = abs(iqa_r['t_coul'] - coul_analyt)
-    print('DIFF (kcal/mol) ', diff / 0.0015936014376406278)
-    print()
-    print('Atomic Coulomb energy:')
-    for idx, at in enumerate(at_nums):
-        print(f"{at}   {iqa_r['at_coul'][idx]: .5f}")
-    print()
-    if f_exch and f_corr:
-        print(f"DTF Exchange energy: {iqa_r['t_dft_x']: .5f}")
-        print(f"DTF Correlation energy: {iqa_r['t_dft_c']: .5f}")
-        print()
-        print('Atomic DFT Exchange energy:')
-        for idx, at in enumerate(at_nums):
-            print(f"{at}   {iqa_r['at_dft_x'][idx]: .5f}")
-        print('Atomic DFT Correlation energy:')
-        for idx, at in enumerate(at_nums):
-            print(f"{at}   {iqa_r['at_dft_c'][idx]: .5f}")
+    if APOSTBase.dft:
+        # First check unrestricted
+        if APOSTBase.unrestr:
+            iqa_r_b['t_dft_xc'], iqa_r_b['at_dft_xc'], iqa_r_b['coeff_mix'] = ee_dft_energy(at_nums, xc_code, xc_type,(rho_a, rho_b), ao_dens, qw, mol_w, atgrid_idx, spin=1)
+            # The calculated energy density is on obtained with alpha and beta densities. Only populating results for beta dict and assigning 0 to alpha results dict
+            # iqa_r_a['t_dft_xc'], iqa_r_a['at_dft_xc'], iqa_r_a['coeff_mix'] = 0, 0, 0
+            if ee_hf:
+                if iqa_r_b['coeff_mix']:
+                    # Scaling exchange
+                    # iqa_r_b['t_dft_xc'] = iqa_r_b['t_dft_xc'] * (1 - iqa_r_b['coeff_mix'])
+                    # iqa_r_b['at_dft_xc'] = iqa_r_b['at_dft_xc'] * (1 - iqa_r_b['coeff_mix'])
+                    iqa_r_b['t_exch'] = iqa_r_b['t_exch'] * iqa_r_b['coeff_mix']
+                    iqa_r_a['t_exch'] = iqa_r_a['t_exch'] * iqa_r_b['coeff_mix']
+                elif xc_type != 'LDA':
+                    iqa_r_b.pop('t_exch')
+                    iqa_r_b.pop('at_exch')
+                    iqa_r_a.pop('t_exch')
+                    iqa_r_a.pop('at_exch')
 
-    if f_exch and not f_corr:
-        print(f"DTF Exchange-Correlation energy: {iqa_r['t_dft_xc']: .5f}" )
-        print()
-        print('Atomic DFT Exchange-Correlation energy:')
-        for idx, at in enumerate(at_nums):
-            print(f"{at}   {iqa_r['at_dft_xc'][idx]: .5f}")
 
-    if 'x_hf_total' in iqa_r.keys():
-        print(f"HF Exchange: {iqa_r['t_exch']: .5f}" )
-        print(f'HF Exchange energy(PySCF/Libcint):  {exch_analyt: .5f}')
-        diff = abs(iqa_r['t_exch'] - exch_analyt)
-        print('DIFF (kcal/mol) ', diff / 0.0015936014376406278)
-        print('COEFF MIX :', coeff_mix)
-        print()
-        print('Atomic HF Exchange energy:')
-        for idx, at in enumerate(at_nums):
-            print(f"{at}   {iqa_r['at_exch'][idx]: .5f}")
+        else:
+            iqa_r_a['t_dft_xc'], iqa_r_a['at_dft_xc'], iqa_r_a['coeff_mix'] = ee_dft_energy(at_nums, xc_code, xc_type,rho_a, ao_dens, qw, mol_w, atgrid_idx, spin=0)
+            if ee_hf:
+                if iqa_r_a['coeff_mix']:
+                    # Scaling exchange
+                    # iqa_r_a['t_dft_xc'] = iqa_r_a['t_dft_xc'] * (1 - iqa_r_a['coeff_mix'])
+                    # iqa_r_a['at_dft_xc'] = iqa_r_a['at_dft_xc'] * (1 - iqa_r_a['coeff_mix'])
+                    iqa_r_a['t_exch'] = iqa_r_a['t_exch'] * iqa_r_a['coeff_mix']
+                elif xc_type != 'LDA':
+                    iqa_r_a.pop('t_exch')
+                    iqa_r_a.pop('at_exch')
 
-    total_sum_energy = 0
-    for k in iqa_r.keys():
-        if k.startswith('t_'):
-            total_sum_energy += iqa_r[k]
+    # Note: we could add printing as optional since we return the dict at the end
+    if APOSTBase.unrestr:
+        out_summary([iqa_r_a, iqa_r_b], at_nums, APOSTBase.energy)
+    else:
+        out_summary([iqa_r_a], at_nums, APOSTBase.energy)
 
-    print('TOTAL ENERGY (SUM OF COMPONENTS):', total_sum_energy)
-    print('TOTAL ENERGY (PySCF):', APOSTBase.energy)
-    print('DIFF (AU) :', total_sum_energy - APOSTBase.energy)
-    print('DIFF (Kcal) :', (total_sum_energy - APOSTBase.energy) / 0.0015936014376406278)
-    # print('CHARGE PART OBJECT', self.part.charges)
-    assert 5 == 7
-    return iqa_r
+    return (iqa_r_a, iqa_r_b)
+

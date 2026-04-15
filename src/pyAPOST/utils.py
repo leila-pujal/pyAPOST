@@ -1,6 +1,9 @@
 import numpy as np
 
+import logging
+
 from pyscf.dft.numint import eval_ao, eval_rho
+
 
 
 # Note: if basis set big, for memory efficiency might be better to access already evaluated AO on the grid
@@ -9,8 +12,175 @@ def eval_dens(mol, dm, coords):
     """Utility to evaluate density on a grid of points. Equivalent to pyscf/dft/numint.py eval_rho()"""
     dens_ao = eval_ao(mol, coords)
     dens = np.zeros((dens_ao.shape[0]))
+    print(dens.shape,  dens_ao.shape, coords.shape)
+    # assert 5 == 6
     for mu in range(dens_ao.shape[1]):
         for nu in range(dens_ao.shape[1]):
             dens += dm[mu, nu] * dens_ao.T[mu, :] * dens_ao.T[nu, :]
 
     return dens
+
+def out_summary(iqa_data, at_nums, total_energy):
+
+    if len(iqa_data) != 2 and not isinstance(iqa_data[0], dict):
+        raise ValueError(f"iqa_data must have length 1 or 2")
+
+    logging.info('Summary IQA')
+    print(f"Nucleus-Nucleus repulsion energy: {iqa_data[0]['t_nn']:.5f}")
+    print('------------------------------------')
+    if len(iqa_data) == 2:
+        # BETA ########################
+        print('ALPHA/BETA ELECTRONS (UNRESTRICTED)')
+        print(f"Electron-Nucleus attraction energy: {iqa_data[1]['t_en']:.5f}")
+        print(
+            f"Electron-Nucleus attraction energy (PySCF/Libcint): {iqa_data[1]['en_analyt']: .5f}")
+        diff = abs(iqa_data[1]['t_en'] - iqa_data[1]['en_analyt'])
+        print('DIFF (kcal/mol) ', diff / 0.0015936014376406278)
+        for idx, at in enumerate(at_nums):
+            print(f"{at}   {iqa_data[1]['at_en_cond'][idx]: .5f}")
+        print('------------------------------------')
+        print(f"Kinetic energy:  {iqa_data[1]['t_kin']:.5f}")
+        print(f"Kinetic energy(PySCF/Libcint):  {iqa_data[1]['kin_analyt']: .5f}")
+        diff = abs(iqa_data[1]['t_kin'] - iqa_data[1]['kin_analyt'])
+        print('DIFF (kcal/mol) ', diff / 0.0015936014376406278)
+        print()
+        print('Atomic Kinetic energy:')
+        for idx, at in enumerate(at_nums):
+            print(f"{at}   {iqa_data[1]['at_kin'][idx]: .5f}")
+
+        if 't_coul' in iqa_data[1].keys():
+            print('------------------------------------')
+            print('Electron-Electron interaction energy')
+            print()
+            print(f"Coulomb energy: {iqa_data[1]['t_coul']: .5f}", )
+            print(f"Coulomb energy(PySCF/Libcint):  {iqa_data[1]['coul_analyt']: .5f}")
+            diff = abs(iqa_data[1]['t_coul'] - iqa_data[1]['coul_analyt'])
+            print('DIFF (kcal/mol) ', diff / 0.0015936014376406278)
+            print()
+            print('Atomic Coulomb energy:')
+            for idx, at in enumerate(at_nums):
+                print(f"{at}   {iqa_data[1]['at_coul'][idx]: .5f}")
+            print()
+        if 't_exch' in iqa_data[1].keys():
+            for si,s in enumerate(['ALPHA', 'BETA']):
+                print(f'HF EXCHANGE FOR SPIN ORBITALS {s}')
+                print(f"HF Exchange: {iqa_data[si]['t_exch']: .5f}")
+                print('COEFF MIX :', iqa_data[1]['coeff_mix'])
+                if iqa_data[1]['coeff_mix']:
+                    print(f"HF Exchange energy(PySCF/Libcint):  {iqa_data[si]['exch_analyt']: .5f}")
+                    print(f"HF Exchange energy(PySCF/Libcint):  {iqa_data[si]['exch_analyt'] * iqa_data[1]['coeff_mix']: .5f}")
+                    diff = abs(iqa_data[si]['t_exch'] - iqa_data[si]['exch_analyt'] * iqa_data[1]['coeff_mix'])
+                    print('DIFF (kcal/mol) ', diff / 0.0015936014376406278)
+                    print()
+                    print('Atomic HF Exchange energy:')
+                    for idx, at in enumerate(at_nums):
+                        print(f"{at}   {iqa_data[si]['at_exch'][idx] * iqa_data[1]['coeff_mix']: .5f}")
+                else:
+                    print(f"HF Exchange energy(PySCF/Libcint):  {iqa_data[si]['exch_analyt']: .5f}")
+                    diff = abs(iqa_data[si]['t_exch'] - iqa_data[si]['exch_analyt'])
+                    print('DIFF (kcal/mol) ', diff / 0.0015936014376406278)
+                    print()
+                    print('Atomic HF Exchange energy:')
+                    for idx, at in enumerate(at_nums):
+                        print(f"{at}   {iqa_data[si]['at_exch'][idx]: .5f}")
+        print()
+
+        total_sum_energy_a = 0
+        for k in iqa_data[0].keys():
+            if k.startswith('t_'):
+                if k == 't_nn':
+                    pass
+                else:
+                    total_sum_energy_a += iqa_data[0][k]
+
+        total_sum_energy_b = 0
+        for k in iqa_data[1].keys():
+            if k.startswith('t_'):
+                if k == 't_nn':
+                    pass
+                else:
+                    total_sum_energy_b += iqa_data[1][k]
+
+        print('TOTAL ENERGY ALPHA (SUM OF COMPONENTS):', total_sum_energy_a)
+        print('TOTAL ENERGY BETA (SUM OF COMPONENTS):', total_sum_energy_b )
+        print()
+        print('TOTAL ENERGY (SUM OF COMPONENTS):', total_sum_energy_a + total_sum_energy_b + iqa_data[0]['t_nn'])
+        print('TOTAL ENERGY (PySCF):', total_energy)
+        print('DIFF (AU) :',total_sum_energy_a + total_sum_energy_b + iqa_data[0]['t_nn'] - total_energy)
+        print('DIFF (Kcal) :', (total_sum_energy_a + total_sum_energy_b + iqa_data[0]['t_nn'] - total_energy) / 0.0015936014376406278)
+
+        print()
+
+        ###############################
+    else:
+        print('ALPHA/BETA ELECTRONS (RESTRICTED)')
+        print(f"Electron-Nucleus attraction energy: {iqa_data[0]['t_en']:.5f}")
+        print(
+            f"Electron-Nucleus attraction energy (PySCF/Libcint): {iqa_data[0]['en_analyt']: .5f}")
+        diff = abs(iqa_data[0]['t_en'] - iqa_data[0]['en_analyt'])
+        print('DIFF (kcal/mol) ', diff / 0.0015936014376406278)
+        for idx, at in enumerate(at_nums):
+            print(f"{at}   {iqa_data[0]['at_en_cond'][idx]: .5f}")
+        print('------------------------------------')
+        print(f"Kinetic energy:  {iqa_data[0]['t_kin']:.5f}")
+        print(f"Kinetic energy(PySCF/Libcint):  {iqa_data[0]['kin_analyt']: .5f}")
+        diff = abs(iqa_data[0]['t_kin'] - iqa_data[0]['kin_analyt'])
+        print('DIFF (kcal/mol) ', diff / 0.0015936014376406278)
+        print()
+        print('Atomic Kinetic energy:')
+        for idx, at in enumerate(at_nums):
+            print(f"{at}   {iqa_data[0]['at_kin'][idx]: .5f}")
+
+        if 't_coul' in iqa_data[0].keys():
+            print('------------------------------------')
+            print('Electron-Electron interaction energy')
+            print()
+            print(f"Coulomb energy: {iqa_data[0]['t_coul']: .5f}", )
+            print(f"Coulomb energy(PySCF/Libcint):  {iqa_data[0]['coul_analyt']: .5f}")
+            diff = abs(iqa_data[0]['t_coul'] - iqa_data[0]['coul_analyt'])
+            print('DIFF (kcal/mol) ', diff / 0.0015936014376406278)
+            print()
+            print('Atomic Coulomb energy:')
+            for idx, at in enumerate(at_nums):
+                print(f"{at}   {iqa_data[0]['at_coul'][idx]: .5f}")
+            print()
+        if 't_exch' in iqa_data[0].keys():
+            print(f"HF Exchange: {iqa_data[0]['t_exch']: .5f}")
+            print('COEFF MIX :', iqa_data[0]['coeff_mix'])
+            if iqa_data[0]['coeff_mix']:
+                print(f"HF Exchange energy(PySCF/Libcint):  {iqa_data[0]['exch_analyt'] : .5f}")
+                print(f"HF Exchange energy(PySCF/Libcint):  {iqa_data[0]['exch_analyt'] * iqa_data[0]['coeff_mix']: .5f}")
+                diff = abs(iqa_data[0]['t_exch'] - iqa_data[0]['exch_analyt']* iqa_data[0]['coeff_mix'])
+                print('DIFF (kcal/mol) ', diff / 0.0015936014376406278)
+                print()
+                print('Atomic HF Exchange energy:')
+                for idx, at in enumerate(at_nums):
+                    print(f"{at}   {iqa_data[0]['at_exch'][idx]* iqa_data[0]['coeff_mix']: .5f}")
+            else:
+                print(f"HF Exchange energy(PySCF/Libcint):  {iqa_data[0]['exch_analyt']: .5f}")
+                diff = abs(iqa_data[0]['t_exch'] - iqa_data[0]['exch_analyt'])
+                print('DIFF (kcal/mol) ', diff / 0.0015936014376406278)
+                print()
+                print('Atomic HF Exchange energy:')
+                for idx, at in enumerate(at_nums):
+                    print(f"{at}   {iqa_data[0]['at_exch'][idx]: .5f}")
+
+        if 't_dft_xc' in iqa_data[0].keys():
+            print(f"DTF Exchange-Correlation energy: {iqa_data[0]['t_dft_xc']: .5f}")
+            print()
+            print('Atomic DFT Exchange-Correlation energy:')
+            for idx, at in enumerate(at_nums):
+                print(f"{at}   {iqa_data[0]['at_dft_xc'][idx]: .5f}")
+
+
+        print()
+        total_sum_energy = 0
+        for k in iqa_data[0].keys():
+            if k.startswith('t_'):
+                total_sum_energy += iqa_data[0][k]
+
+        print('TOTAL ENERGY (SUM OF COMPONENTS):', total_sum_energy)
+        print('TOTAL ENERGY (PySCF):', total_energy)
+        print('DIFF (AU) :', total_sum_energy - total_energy)
+        print('DIFF (Kcal) :', (total_sum_energy - total_energy) / 0.0015936014376406278)
+        #############################
