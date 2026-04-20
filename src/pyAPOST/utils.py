@@ -50,40 +50,99 @@ def out_summary(iqa_data, at_nums, total_energy):
 
         if 't_coul' in iqa_data[1].keys():
             print('------------------------------------')
-            print('Electron-Electron interaction energy')
+            if len(iqa_data[1]['at_coul'].shape) == 1:
+                print('Electron-Electron interaction energy')
+            elif len(iqa_data[1]['at_coul'].shape) == 2:
+                print('Interatomic Electron-Electron interaction energy')
             print()
             print(f"Coulomb energy: {iqa_data[1]['t_coul']: .5f}", )
             print(f"Coulomb energy(PySCF/Libcint):  {iqa_data[1]['coul_analyt']: .5f}")
             diff = abs(iqa_data[1]['t_coul'] - iqa_data[1]['coul_analyt'])
             print('DIFF (kcal/mol) ', diff / 0.0015936014376406278)
             print()
-            print('Atomic Coulomb energy:')
-            for idx, at in enumerate(at_nums):
-                print(f"{at}   {iqa_data[1]['at_coul'][idx]: .5f}")
-            print()
+            if len(iqa_data[1]['at_coul'].shape) == 1:
+                print('Atomic Coulomb energy:')
+                for idx, at in enumerate(at_nums):
+                    print(f"{at}   {iqa_data[1]['at_coul'][idx]: .5f}")
+                print()
+            elif len(iqa_data[1]['at_coul'].shape) == 2:
+                print('Full Coulomb energy decomposition:')
+                print("         " + "       ".join([str(a) for a in at_nums]))
+                for idx1, at1 in enumerate(at_nums):
+                    row_r = []
+                    for idx2, at2 in enumerate(at_nums):
+                        row_r.append(str(round(iqa_data[1]['at_coul'][idx1, idx2], 5)))
+                    print(f"{at}   " + " ".join(row_r))
+                # print(f"{at}   {iqa_data[0]['at_coul'][idx]: .5f}")
+                print()
         if 't_exch' in iqa_data[1].keys():
             for si,s in enumerate(['ALPHA', 'BETA']):
                 print(f'HF EXCHANGE FOR SPIN ORBITALS {s}')
                 print(f"HF Exchange: {iqa_data[si]['t_exch']: .5f}")
-                print('COEFF MIX :', iqa_data[1]['coeff_mix'])
-                if iqa_data[1]['coeff_mix']:
+                if iqa_data[1].get('coeff_mix', None):
+                    print('COEFF MIX :', iqa_data[1]['coeff_mix'])
                     print(f"HF Exchange energy(PySCF/Libcint):  {iqa_data[si]['exch_analyt']: .5f}")
                     print(f"HF Exchange energy(PySCF/Libcint):  {iqa_data[si]['exch_analyt'] * iqa_data[1]['coeff_mix']: .5f}")
                     diff = abs(iqa_data[si]['t_exch'] - iqa_data[si]['exch_analyt'] * iqa_data[1]['coeff_mix'])
                     print('DIFF (kcal/mol) ', diff / 0.0015936014376406278)
                     print()
-                    print('Atomic HF Exchange energy:')
-                    for idx, at in enumerate(at_nums):
-                        print(f"{at}   {iqa_data[si]['at_exch'][idx] * iqa_data[1]['coeff_mix']: .5f}")
+                    if len(iqa_data[1]['at_exch'].shape) == 1:
+                        print('Atomic HF Exchange energy:')
+                        for idx, at in enumerate(at_nums):
+                            print(f"{at}   {iqa_data[1]['at_exch'][idx] * iqa_data[1]['coeff_mix']: .5f}")
+                        print()
+                    elif len(iqa_data[1]['at_exch'].shape) == 2:
+                        print('Full HF Exchange energy decomposition:')
+                        print("         " + "       ".join([str(a) for a in at_nums]))
+                        for idx1, at1 in enumerate(at_nums):
+                            row_r = []
+                            for idx2, at2 in enumerate(at_nums):
+                                row_r.append(str(round(iqa_data[1]['at_exch'][idx1, idx2] * iqa_data[1]['coeff_mix'], 5)))
+                            print(f"{at}   " + " ".join(row_r))
+                        # print(f"{at}   {iqa_data[0]['at_coul'][idx]: .5f}")
+                        print()
                 else:
                     print(f"HF Exchange energy(PySCF/Libcint):  {iqa_data[si]['exch_analyt']: .5f}")
                     diff = abs(iqa_data[si]['t_exch'] - iqa_data[si]['exch_analyt'])
                     print('DIFF (kcal/mol) ', diff / 0.0015936014376406278)
                     print()
-                    print('Atomic HF Exchange energy:')
-                    for idx, at in enumerate(at_nums):
-                        print(f"{at}   {iqa_data[si]['at_exch'][idx]: .5f}")
+                    if len(iqa_data[1]['at_exch'].shape) == 1:
+                        print('Atomic HF Exchange energy:')
+                        for idx, at in enumerate(at_nums):
+                            print(
+                                f"{at}   {iqa_data[1]['at_exch'][idx]: .5f}")
+                        print()
+                    elif len(iqa_data[1]['at_exch'].shape) == 2:
+                        print('Full HF Exchange energy decomposition:')
+                        print("         " + "       ".join([str(a) for a in at_nums]))
+                        for idx1, at1 in enumerate(at_nums):
+                            row_r = []
+                            for idx2, at2 in enumerate(at_nums):
+                                row_r.append(str(round(iqa_data[1]['at_exch'][idx1, idx2], 5)))
+                            print(f"{at}   " + " ".join(row_r))
+                        # print(f"{at}   {iqa_data[0]['at_coul'][idx]: .5f}")
+                        print()
         print()
+
+        if 't_dft_xc' in iqa_data[1].keys():
+            print(f"DTF Exchange-Correlation energy: {iqa_data[1]['t_dft_xc']: .5f}")
+            if len(iqa_data[1]['at_dft_xc'].shape) == 1:
+                print('Atomic DFT Exchange-Correlation energy:')
+                for idx, at in enumerate(at_nums):
+                    print(
+                        f"{at}   {iqa_data[1]['at_dft_xc'][idx]: .5f}")
+                print()
+            elif len(iqa_data[1]['at_dft_xc'].shape) == 2:
+                print('Full DFT Exchange-Correlation energy decomposition (BOD approach):')
+                print("         " + "       ".join([str(a) for a in at_nums]))
+                for idx1, at1 in enumerate(at_nums):
+                    row_r = []
+                    for idx2, at2 in enumerate(at_nums):
+                        row_r.append(str(round(iqa_data[1]['at_dft_xc'][idx1, idx2], 5)))
+                    print(f"{at}   " + " ".join(row_r))
+                # print(f"{at}   {iqa_data[0]['at_coul'][idx]: .5f}")
+            print(f"DTF Exchange-Correlation energy: {iqa_data[1]['t_dft_xc']: .5f}")
+            print()
 
         total_sum_energy_a = 0
         for k in iqa_data[0].keys():
@@ -133,38 +192,79 @@ def out_summary(iqa_data, at_nums, total_energy):
 
         if 't_coul' in iqa_data[0].keys():
             print('------------------------------------')
-            print('Electron-Electron interaction energy')
+            if len(iqa_data[0]['at_coul'].shape) == 1:
+                print('Electron-Electron interaction energy')
+            elif len(iqa_data[0]['at_coul'].shape) == 2:
+                print('Interatomic Electron-Electron interaction energy')
+
             print()
             print(f"Coulomb energy: {iqa_data[0]['t_coul']: .5f}", )
             print(f"Coulomb energy(PySCF/Libcint):  {iqa_data[0]['coul_analyt']: .5f}")
             diff = abs(iqa_data[0]['t_coul'] - iqa_data[0]['coul_analyt'])
             print('DIFF (kcal/mol) ', diff / 0.0015936014376406278)
             print()
-            print('Atomic Coulomb energy:')
-            for idx, at in enumerate(at_nums):
-                print(f"{at}   {iqa_data[0]['at_coul'][idx]: .5f}")
-            print()
+            if len(iqa_data[0]['at_coul'].shape) == 1:
+                print('Atomic Coulomb energy:')
+                for idx, at in enumerate(at_nums):
+                    print(f"{at}   {iqa_data[0]['at_coul'][idx]: .5f}")
+                print()
+            elif len(iqa_data[0]['at_coul'].shape) == 2:
+                print('Full Coulomb energy decomposition:')
+                print("         " + "       ".join([str(a) for a in at_nums]))
+                for idx1, at1 in enumerate(at_nums):
+                    row_r = []
+                    for idx2, at2 in enumerate(at_nums):
+                        row_r.append(str(round(iqa_data[0]['at_coul'][idx1, idx2], 5)))
+                    print(f"{at}   " + " ".join(row_r))
+                # print(f"{at}   {iqa_data[0]['at_coul'][idx]: .5f}")
+                print()
+
+
         if 't_exch' in iqa_data[0].keys():
             print(f"HF Exchange: {iqa_data[0]['t_exch']: .5f}")
-            print('COEFF MIX :', iqa_data[0]['coeff_mix'])
-            if iqa_data[0]['coeff_mix']:
+            if iqa_data[0].get('coeff_mix', None):
+                print('COEFF MIX :', iqa_data[0]['coeff_mix'])
                 print(f"HF Exchange energy(PySCF/Libcint):  {iqa_data[0]['exch_analyt'] : .5f}")
                 print(f"HF Exchange energy(PySCF/Libcint):  {iqa_data[0]['exch_analyt'] * iqa_data[0]['coeff_mix']: .5f}")
                 diff = abs(iqa_data[0]['t_exch'] - iqa_data[0]['exch_analyt']* iqa_data[0]['coeff_mix'])
                 print('DIFF (kcal/mol) ', diff / 0.0015936014376406278)
                 print()
-                print('Atomic HF Exchange energy:')
-                for idx, at in enumerate(at_nums):
-                    print(f"{at}   {iqa_data[0]['at_exch'][idx]* iqa_data[0]['coeff_mix']: .5f}")
+                if len(iqa_data[0]['at_exch'].shape) == 1:
+                    print('Atomic HF Exchange energy:')
+                    for idx, at in enumerate(at_nums):
+                        print(f"{at}   {iqa_data[0]['at_exch'][idx] * iqa_data[0]['coeff_mix']: .5f}")
+                    print()
+                elif len(iqa_data[0]['at_exch'].shape) == 2:
+                    print('Full HF Exchange energy decomposition:')
+                    print("         " + "       ".join([str(a) for a in at_nums]))
+                    for idx1, at1 in enumerate(at_nums):
+                        row_r = []
+                        for idx2, at2 in enumerate(at_nums):
+                            row_r.append(str(round(iqa_data[0]['at_exch'][idx1, idx2] * iqa_data[0]['coeff_mix'], 5)))
+                        print(f"{at}   " + " ".join(row_r))
+                    # print(f"{at}   {iqa_data[0]['at_coul'][idx]: .5f}")
+                    print()
             else:
                 print(f"HF Exchange energy(PySCF/Libcint):  {iqa_data[0]['exch_analyt']: .5f}")
                 diff = abs(iqa_data[0]['t_exch'] - iqa_data[0]['exch_analyt'])
                 print('DIFF (kcal/mol) ', diff / 0.0015936014376406278)
                 print()
                 print('Atomic HF Exchange energy:')
-                for idx, at in enumerate(at_nums):
-                    print(f"{at}   {iqa_data[0]['at_exch'][idx]: .5f}")
-
+                if len(iqa_data[0]['at_exch'].shape) == 1:
+                    for idx, at in enumerate(at_nums):
+                        print(f"{at}   {iqa_data[0]['at_exch'][idx]: .5f}")
+                    print()
+                elif len(iqa_data[0]['at_coul'].shape) == 2:
+                    print('Full HF Exchange energy decomposition:')
+                    print("         " + "       ".join([str(a) for a in at_nums]))
+                    for idx1, at1 in enumerate(at_nums):
+                        row_r = []
+                        for idx2, at2 in enumerate(at_nums):
+                            row_r.append(str(round(
+                                iqa_data[0]['at_exch'][idx1, idx2], 5)))
+                        print(f"{at}   " + " ".join(row_r))
+                    # print(f"{at}   {iqa_data[0]['at_coul'][idx]: .5f}")
+                    print()
         if 't_dft_xc' in iqa_data[0].keys():
             print(f"DTF Exchange-Correlation energy: {iqa_data[0]['t_dft_xc']: .5f}")
             print()
