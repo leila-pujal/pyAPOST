@@ -120,33 +120,244 @@ class APOSTBase(object):
                 self._occ_b = calc.mo_occ
                 self._dm_a = calc.make_rdm1()
                 self._dm_b = calc.make_rdm1()
+                logger.info('OCCUPATIONS (RESTRICTED)')
+                print('ALPHA/BETA', self._occ_a)
+                print('TOTAL', np.sum(self._occ_a))
 
-        elif "CASSCF" in self._kind_calc:
-            self._casscf = True
-            # Because PySCF does not store CASSCF mo_coeff coefficients for all orbitals together
-            # we obtain it solving the general eigenvalue equation  # Q
-            # Q: is CASSCF always unrestricted?
-            # DEV TEST ###
-            # casdm1a, casdm1b = calc.fcisolver.make_rdm1s(calc.ci, calc.ncas, calc.nelecas)
-            # print('a', casdm1a)
-            # print('b', casdm1b)
+        elif ("CASSCF" in self._kind_calc) or ("CASCI" in self._kind_calc):
+            self._cas = True
+            # We need this to compute one electron terms correctly
+            if "ROHF" in str(type(calc._scf)):
+                self._unrestr = True
+                self._dm_a, self._dm_b = mcscf.addons.make_rdm1s(calc)
+            else:
+                self._dm_a = mcscf.addons.make_rdm1(calc)
+                self._dm_b = self._dm_a
+
             ##########
-            self._dm_a, self._dm_b = mcscf.addons.make_rdm1s(calc)
+            # Obtain natural orbitals coefficients in the AO by diagonalizing generalized equation (SPS)C=SCE
             # From debug: scipy.linalg.eigh((np.linalg.multi_dot((self._ovlp, self._dm_b, self._ovlp))), b=self._ovlp) gives changed signed values compared to scipy.linalg.eigh(SCR_a, b=self._ovlp)
+            # Obtain Natural orbitals from P in AO
             SCR_a = np.linalg.multi_dot((self._ovlp, self._dm_a, self._ovlp))
             SCR_b = np.linalg.multi_dot((self._ovlp, self._dm_b, self._ovlp))
+            # SCR = np.linalg.multi_dot((self._ovlp, self._dm_b + self._dm_a, self._ovlp))
             occ_a, coeff_a = scipy.linalg.eigh(SCR_a, b=self._ovlp)
             occ_b, coeff_b = scipy.linalg.eigh(SCR_b, b=self._ovlp)
+            # occ, coeff = scipy.linalg.eigh(SCR, b=self._ovlp)
             # scipy.linalg.eigh returns smallest to highest order --> flip
             # coeff_a == C_AO,MO --> flip axis=1
             # Check with original code APOSTpy: Yes
             occ_a, coeff_a = np.flip(occ_a), np.flip(coeff_a, axis=1)
             occ_b, coeff_b = np.flip(occ_b), np.flip(coeff_b, axis=1)
+            # occ, coeff = np.flip(occ), np.flip(coeff, axis=1)
 
             self._occ_a = occ_a
             self._occ_b = occ_b
             self._mo_coeff_a = coeff_a
             self._mo_coeff_b= coeff_b
+
+            # DEV:  Dic with only CAS related data.
+            # For IQA-PHF we only need norb after saving the DMs.
+            # Keeping it for now (as protected attribute of the class) to see if we needed for the spin
+            self._cas_data = {}
+            self._cas_data['nelecas'] =  calc.nelecas  # total cas electrons tuple(alpha,beta) now only taking alpha because restricted
+            self._cas_data['ncore'] = calc.ncore # number of inactive
+            self._cas_data['ncas'] = calc.ncas # total cas orbitals
+            self._cas_data['ci'] = calc.ci # CAS space FCI coefficients (From pyscf doc CASBase class)
+
+            # calc.ci: CAS space FCI coefficients (From pyscf doc CASBase class)
+            # casdm1 = tuple with alpha and beta active space orbitals dm1
+            casdm1s = calc.fcisolver.make_rdm1s(calc.ci, calc.ncas, calc.nelecas)
+
+            # Reconstructing dm1 as in APOST. Could be potentially refactored in the future
+            # dm1 --> spinorb, spinorb
+            # spinorb: (number of cas orbitals + core orbitals) * 2 because spin
+            spinorb = (self._cas_data['ncas'] + self._cas_data['ncore']) *2
+            norb = int(spinorb/2)
+            print('LOADING MULTIREFERENCE METHOD DATA')
+            logger.info(f'  Post-Hartree Fock CAS :', )
+            print('Number of total orbitals HF:', calc._scf.mo_occ[calc._scf.mo_occ > 0].shape[0])
+            print('Occupations orbitals HF:', calc._scf.mo_occ[calc._scf.mo_occ > 0])
+            print('Number of total orbitals CAS:', norb)
+            # Note: nelec only works for unrestricted
+            # print('Number of total electrons :', calc._scf.nelec, calc._scf.mo_occ.sum())
+            print('Number of core orbitals :', self._cas_data['ncore'])
+            print('Number of active space orbitals :', self._cas_data['ncas'])
+            print('Number of active space electrons : ', self._cas_data['nelecas'])
+
+            dm1 = np.zeros((spinorb, spinorb))
+            dm1_a = np.zeros((norb, norb))
+            dm1_b = np.zeros((norb, norb))
+
+            # fill with alpha and beta dm1 values
+            # Dev: for now we follow APOST convention:
+            # dm1[0:core, 0:core] = 1 in the diagonal
+            # dm1[core:spinorb, core:spinorb] = order is alternate alpha and beta --> spinorb-1=1a,spinorb2=1b, spinorbital3=2a and so on
+            # Only fill combinations of indices that are the same spin. For example indices 01 corresponds to first alpha spinorbital and first beta spinorbital. This is zero
+            # CORE
+            for i in range(self._cas_data['ncore'] * 2):
+                dm1[i, i] = 1
+            for i in range(self._cas_data['ncore']):
+                dm1_a[i, i] = 1
+                dm1_b[i, i] = 1
+            spin_ncore = self._cas_data['ncore'] * 2
+            for i in range(self._cas_data['ncas']*2):
+                for j in range(self._cas_data['ncas']*2):
+                    if i<self._cas_data['ncas'] and j<self._cas_data['ncas']:
+                        dm1_a[i+self._cas_data['ncore'],j+self._cas_data['ncore']] =  casdm1s[0][i, j]
+                        dm1_b[i+self._cas_data['ncore'],j+self._cas_data['ncore']] =  casdm1s[1][i, j]
+                    if i== 0 and j==0:
+                        dm1[i + spin_ncore, j + spin_ncore] = casdm1s[0][i, j]
+                    elif i==0 and j%2 == 0:
+                        j_a = int(j/2)
+                        dm1[i+spin_ncore,j+spin_ncore] = casdm1s[0][i, j_a]
+                    elif i%2 == 0 and j%2 == 0:
+                        i_a = int(i / 2)
+                        j_a = int(j / 2)
+                        dm1[i+spin_ncore,j+spin_ncore] = casdm1s[0][i_a, j_a]
+                    elif i%2 == 1 and j%2 == 1:
+                        i_b = int((i+1)/2)-1
+                        j_b = int((j+1)/2)-1
+                        dm1[i+spin_ncore,j+spin_ncore] = casdm1s[1][i_b, j_b]
+
+            # dm1_a[abs(dm1_a) < 1e-15] = 0
+            # dm1_b[abs(dm1_b) < 1e-15] = 0
+            # dm1[abs(dm1) < 1e-15] = 0
+            # Test idempotency
+            print('TEST idempotency', np.sum(np.dot(dm1,dm1) - dm1))
+            print()
+
+            # print('Building D_ij')
+            print('Building Spinless 1-RDM (DM1)')
+            dij = np.zeros(calc.mo_coeff.shape) # dim: basis functions, basis functions
+            dij_a = np.zeros(calc.mo_coeff.shape)
+            dij_b = np.zeros(calc.mo_coeff.shape)
+            for i in range(0, int(spinorb/2)):
+                for j in range(0, int(spinorb/2)):
+                    dij[i, j] = dm1[i*2, j*2] + dm1[i*2+1, j*2+1]
+                    dij_a[i, j] = dm1[i*2, j*2]
+                    dij_b[i, j] = dm1[i*2+1, j*2+1]
+
+            # diagonalizing Dij
+            # Note: By diagonalizing the DM1 (Dij) we obtain the same eigenvalues/eigenvectors obtained
+            # earlier up to some threshold. The diagonalization of DM1 in AO basis adds spurious very small
+            # negative values (order 10^-14) as eigenvalues. This also makes the coefficients slightly different
+            # if we included them in the diagonal of DM1 and diagonalize then we recover the same coefficients.
+            # occ_no, coeff_no = scipy.linalg.eigh(dij)
+            occ_no, coeff_no = np.linalg.eigh(dij)
+            coeff_no = np.flip(coeff_no, axis=1)
+            occ_no = occ_no[::-1] # Same as flip
+            print('Natural orbitals from diagonalization of Dij')
+            print('Natural orbital occupations (> 1e-8)')
+            print('dm1 diagonalization')
+            print('   ' + ' '.join([str(round(o, 4))  for o in occ_no if o > 1e-8]))
+            # print('debug; ps diagonalization')
+            # print('   ' + ' '.join([str(round(o/2, 4))  for o in occ if o > 1e-8]))
+
+            # get density from NOs as a linear combination of MO
+            # coeff_no: array(MO,NO)
+            # coeff: array(AO, MO)
+            # i:NO, k:MO, b:AO
+            coeff_no_ao_basis = np.einsum('bk,ki ->bi', calc.mo_coeff[:, occ_no>1e-8], coeff_no[occ_no>1e-8,:])
+            d = 0
+            dm_no = np.dot(coeff_no_ao_basis*occ_no, coeff_no_ao_basis.T)
+            for mu in range(coeff_no_ao_basis.shape[0]):
+                for nu in range(coeff_no_ao_basis.shape[0]):
+                    d += dm_no[mu, nu] * self._ovlp[nu, mu]
+            print('CHECK: Density from Natural orbitals in AO basis: ', d)
+
+            # Now saving dm2
+            dm2_act = calc.fcisolver.make_rdm2(calc.ci, calc.ncas, calc.nelecas)
+            dm2 = np.zeros((norb, norb, norb, norb))
+            print('Spinless DM2')
+            print('CHECK DM2 dim (active, active, active, active) :', dm2_act.shape)
+            # We need to reconstruct the rest of the dm2: core and core-active block
+            # Note: Core densities are represented by i index (rho1/ii/core) and j (rho2/jj/core) because core are canonical orbitals
+            # and weren't included in active space. rho2 for active is represented by indices kl rho2/lk/active.
+            # Spinless 2-RDM is composed by three blocks, rho1(core) rho2(core), rho1(core)rho2(active)
+            # rho1(active)rho2(active). rho1(active)rho2(active) it's returned by calc.fcisolver.make_rdm2(calc.ci, calc.ncas, calc.nelecas)
+            # and we need to reconstruct rho1(core)rho2(core) and rho1(core)rho2(active). Note rho1 and rho2 make reference to the same core density
+            # For rho1(core)rho2(core) each one has 1 index to recompose the density rho(i,i)rho(j,j) and the only combinations that survive are
+            # i,i,i,i (Coulomb)(a,a,b,b/a,a,b,b) i,i,j,j (Coulomb)(a,a,a,a/b,b,b,b/aabb/bbaa) and i,j,j,i (Exchange) (a,a,a,a/b,b,b,b)
+            # For rho1(core)rho2(active) now rho2(active) indices go over active orbitals k/l. For rho1 i index, for the entry of iikl we could have
+            # spin combinations of aa__, bb__, where ii gives 1 and we need to add the dm1 kl for active orbitals. Here again we have Coulomb contributions (a,a,a,a/b,b,b,b/aabb/bbaa)
+            # adding dm1(kl) values for the corresponding spin, and exchange (a,a,a,a/b,b,b,b) and we add -dm1(kl) value.
+            # Adding the negative value of dm1 for the exchange type of contributions will make to obtain the correct sign for the exchange
+            # density but the inverse sign for the BOD.
+
+            # Core
+            for i in range(self._cas_data['ncore']):
+                # dm2[i, i, i, i] = 2
+                for j in range(self._cas_data['ncore']):
+                    # Coulomb contribution: Because i=alpha,beta and j=alpha,beta --> this gives 4 possible combinations for (ii,jj) (aa,aa)(bb,bb)(aa,bb)(bb,aa)
+                    dm2[i,i,j,j] = 4
+                    # Exchange contribution: Because i=alpha,beta and j=alpha,beta --> this gives 2 possible combinations for (ij,ji) (aa,aa)(bb,bb)
+                    # This contributes to exchange and removing self interaction from coulomb iijj
+                    dm2[i,j,j,i] -= 2
+
+
+            # core-active
+            for i in range(self._cas_data['ncore']):
+                for k in range(self._cas_data['ncore'], norb):
+                    for l in range(self._cas_data['ncore'], norb):
+                        # We are going to code first like apost from the dm1. However, it might be more efficient to use the spin resolve active orbitals
+                        # dm1 obtained from pyscf before combining because the indices are the same for both. APOST does it that way because it reads it from the
+                        # .dm1 file the printed indices already incorporate spin information (e.g alpha=odd number/beta=paired numbers)
+                        # Coulomb terms (+)
+                        dm2[i, i, k, l] = 2.0*dm1[k*2, l*2] + 2.0* dm1[l*2+1, k*2+1]  # dm1(aaaa) + dm1(bbbb) + dm1(aabb) + dm1(bbaa)
+                        dm2[k, l, i, i] += 2.0 *dm1[k*2, l*2] + 2.0 *dm1[l*2+1, k*2+1]
+                        # Exchange terms (-)
+                        dm2[i,l,k,i] -= dm1[k*2, l*2] + dm1[k*2+1, l*2+1] #dm1(aa) + dm1(bb)
+                        dm2[k,i,i,l] -= dm1[k*2, l*2] + dm1[k*2+1, l*2+1]
+
+
+
+
+            # fill dm2 with dm2_active from pyscf
+            # change indices order from 1212 to 1122 !Q: for now keeping them the same. Check APOST
+            # dm2_act = np.transpose(dm2_act, axes=(0, 2, 1,3))
+            for i in range(dm2_act.shape[0]):
+                for k in range(dm2_act.shape[0]):
+                    for j in range(dm2_act.shape[0]):
+                        for l in range(dm2_act.shape[0]):
+                            i_act = i + self._cas_data['ncore']
+                            j_act = j + self._cas_data['ncore']
+                            k_act = k + self._cas_data['ncore']
+                            l_act = l + self._cas_data['ncore']
+                            if abs(dm2_act[i,k,j,l]) > 1e-10:
+                                dm2[i_act,k_act,j_act,l_act] += dm2_act[i,k,j,l]
+            # Check trace
+            # inactive orbitals
+            t1=0
+            t2=0
+            t3=0
+            for i in range(self._cas_data['ncore']):
+                # for i in range(norb):
+                for j in range(self._cas_data['ncore']):
+                    # for j in range(norb):
+                    t1 +=dm2[i,i,j,j]
+            print('CHECK TRACE INACTIVE ORBITALS (N_inact(N_inact-1) ', t1)
+            for i in range(self._cas_data['ncore'], norb):
+                for j in range(self._cas_data['ncore'], norb):
+                    t2 += dm2[i, i, j, j]
+            print('CHECK TRACE ACTIVE ORBITALS (N_active(N_active-1) ', t1)
+
+            for i in range(norb):
+                for j in range(norb):
+                    t3 += dm2[i, i, j, j]
+            print('TOTAL TRACE', t3)
+
+            # Saving DM1s and DM2
+            self._dm1 = dm1 # spinless
+            self._dm1_a = dm1_a
+            self._dm1_b = dm1_b
+            self._dm2 = dm2
+
+            # For now only protected variables of the class because we are not sure if we will use all of them consistently
+            # through the code
+            self._occ_no = occ_no
+            self._coeff_no = coeff_no
+            self._cas_mo_coeff = calc.mo_coeff
 
 
         # PySCF treats CCSD and UCCSD in different modules. For CCSD will return 1 DM in MO basis
@@ -255,6 +466,10 @@ class APOSTBase(object):
         return self._mo_coeff_b
 
     @property
+    def no_coeff(self):
+        return self._coeff_no
+
+    @property
     def occ_a(self):
         return self._occ_a
 
@@ -269,6 +484,24 @@ class APOSTBase(object):
     @property
     def dm_b(self):
         return self._dm_b
+
+    @property
+    def dm1(self):
+        if not self._cas or self._ccsd:
+            raise TypeError('DM1 not saved for SD methods')
+        elif self._ccsd:
+            raise NotImplementedError
+        else:
+            return self._dm1
+
+    @property
+    def dm2(self):
+        if not self._cas or self._ccsd:
+            raise TypeError('DM2 not saved for SD methods')
+        elif self._ccsd:
+            raise NotImplementedError
+        else:
+            return self._dm2
 
     @property
     def energy(self):
