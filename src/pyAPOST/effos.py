@@ -39,7 +39,7 @@ def smo_hilb(APOSTBase, gen=False):
             occ = occ[occ > thresh]
 
         # Post-Hartree Fock
-        elif APOSTBase._casscf or APOSTBase._ccsd:
+        elif APOSTBase._cas or APOSTBase._ccsd:
             # In APOSTbase we always generate dm_a and dm_b. For generalized effos original code APOSTpy works with paired Dm by calling
             # mcscf.addons.make_rdm1() instead of mcscf.addons.make_rdm1s(). Internally PySCF generates Dm returned by mcscf.addons.make_rdm1()
             # by adding dma and dmb in pyscf/fci/direct_spin1.py def make_rdm1. Here we are adding coefficents
@@ -59,7 +59,7 @@ def smo_hilb(APOSTBase, gen=False):
         Smo_u = np.array([np.dot(np.dot(occ_coeff.T, S_AO_frag), occ_coeff) for S_AO_frag in S_AO_frags])
 
         # Normalize Smo_p and Smo_u for post-hartree fock methods and unrestricted SD
-        if APOSTBase._casscf or APOSTBase._ccsd or APOSTBase._unrestr:
+        if APOSTBase._cas or APOSTBase._ccsd or APOSTBase._unrestr:
             # todo: comment on the outer product we are doing below
             norm_occ_p = np.sqrt(abs((occ - 1) * occ))[:, None] * np.sqrt(abs((occ - 1) * occ))[None, :]
             norm_occ_u = np.sqrt(abs((2 - occ) * occ))[:, None] * np.sqrt(abs((2 - occ) * occ))[None, :]
@@ -81,7 +81,7 @@ def smo_hilb(APOSTBase, gen=False):
         Smo_b = np.array([np.linalg.multi_dot((occ_coeff_b.T, S_AO_frag, occ_coeff_b))  for S_AO_frag in S_AO_frags])
 
         # Normalize Smo_a and Smo_b for post-hartree fock methods
-        if APOSTBase._casscf or APOSTBase._ccsd:
+        if APOSTBase._cas or APOSTBase._ccsd:
             norm_occ_a = np.sqrt(APOSTBase.occ_a[APOSTBase.occ_a > thresh])[:, None] * np.sqrt(APOSTBase.occ_a[APOSTBase.occ_a > thresh])[None, :]
             norm_occ_b = np.sqrt(APOSTBase.occ_b[APOSTBase.occ_b > thresh])[:, None] * np.sqrt(APOSTBase.occ_b[APOSTBase.occ_b > thresh])[None, :]
 
@@ -127,7 +127,7 @@ def qij_real(APOSTBase, gen=False):
             occ = occ[occ > thresh]
 
         # Post-Hartree Fock
-        elif APOSTBase._casscf or APOSTBase._ccsd:
+        elif APOSTBase._cas or APOSTBase._ccsd:
             # In APOSTbase we always generate dm_a and dm_b. For generalized effos original code APOSTpy works with paired Dm by calling
             # mcscf.addons.make_rdm1() instead of mcscf.addons.make_rdm1s(). Internally PySCF generates Dm returned by mcscf.addons.make_rdm1()
             # by adding dma and dmb in pyscf/fci/direct_spin1.py def make_rdm1. Here we are adding coefficents
@@ -180,7 +180,7 @@ def qij_real(APOSTBase, gen=False):
         logger.debug(f'  SUM POP A = {sum(pop_all): .6f}')
 
         # Normalize Qij_p and Qij_u for post-hartree fock methods and unrestricted SD
-        if APOSTBase._casscf or APOSTBase._ccsd or APOSTBase._unrestr:
+        if APOSTBase._cas or APOSTBase._ccsd or APOSTBase._unrestr:
             # outer product
             norm_occ_p = np.sqrt(abs((occ - 1) * occ))[:, None] * np.sqrt(abs((occ - 1) * occ))[None, :]
             norm_occ_u = np.sqrt(abs((2 - occ) * occ))[:, None] * np.sqrt(abs((2 - occ) * occ))[None, :]
@@ -247,7 +247,7 @@ def qij_real(APOSTBase, gen=False):
                     ij_b = mo_grid_b[i, :] * mo_grid_b[j, :] * (tmp_w**2) * APOSTBase.part._grid.quadrature_weights
                     qij_b[ifrag, i, j] = np.sum(ij_b)
 
-            if APOSTBase._casscf or APOSTBase._ccsd:
+            if APOSTBase._cas or APOSTBase._ccsd:
                 norm_occ_a = np.sqrt(APOSTBase.occ_a[APOSTBase.occ_a > thresh])[:, None] * np.sqrt(APOSTBase.occ_a[APOSTBase.occ_a > thresh])[None, :]
                 norm_occ_b = np.sqrt(APOSTBase.occ_b[APOSTBase.occ_b > thresh])[:, None] * np.sqrt(APOSTBase.occ_b[APOSTBase.occ_b > thresh])[None, :]
 

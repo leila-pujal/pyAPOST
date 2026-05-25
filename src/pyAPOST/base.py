@@ -83,13 +83,12 @@ class APOSTBase(object):
         self._unrestr = False
         self._sd = False
         self._dft = False
-        self._casscf = False
+        self._cas = False
         self._ccsd = False
         self._xc_code = (None, None)
 
 
         # Sort calc type and set mo_coeffs, mo_occ and dm
-        # todo: first I should check for unrestricted
         # todo: Put test to be sure we fill the variables correctly
         if any([i in self._kind_calc for i in ["RHF", "RKS", "UHF", "UKS", "KS", "dftd3"]]):
             self._sd = True
@@ -98,19 +97,22 @@ class APOSTBase(object):
                 xc_type = calc._numint._xc_type(calc.xc)
                 self._xc_code = (calc.xc, xc_type)
             # Check unrestricted
-            if any([i in self._kind_calc for i in ["UHF", "UKS"]]):
+            if any([i in self._kind_calc for i in ["UHF", "UKS", "ROHF"]]):
                 self._unrestr = True
-                # Q: APOSTpy file solves for the generalized eigenvalue for this type too. Why?
+                # Q: APOSTpy file solves for the generalized eigenvalue for this type too.
                 # Assuming first item is for alpha and second for beta
                 self._mo_coeff_a = calc.mo_coeff[0]
                 self._mo_coeff_b = calc.mo_coeff[1]
                 self._occ_a = calc.mo_occ[0]
                 self._occ_b = calc.mo_occ[1]
                 self._dm_a, self._dm_b = calc.make_rdm1()
-                print(self._occ_a)
-                print(self._dm_a, self._dm_b)
+                logger.info('OCCUPATIONS (UNRESTRICTED)')
+                print('ALPHA', self._occ_a)
+                print('TOTAL ALPHA', np.sum(self._occ_a))
+                print('BETA', self._occ_b)
+                print('TOTAL BETA', np.sum(self._occ_b))
                 self._s = calc.get_ovlp()
-                print(np.trace(np.dot(self._dm_a, self._s)))
+                # print(np.trace(np.dot(self._dm_a, self._s)))
             else:
                 self._mo_coeff_a = calc.mo_coeff
                 self._mo_coeff_b = calc.mo_coeff
@@ -159,8 +161,8 @@ class APOSTBase(object):
                 occ_a, coeff_a = np.flip(occ_a), np.flip(coeff_a, axis=1)
                 occ_b, coeff_b = np.flip(occ_b), np.flip(coeff_b, axis=1)
                 # Transform to AO basis. Note: PySCF returns the dm in AO basis if calc.make_rdm1(ao_repr=True), default is False
-                coeff_a = np.einsum('aj, ji,->ai', calc.mo_coeff[0], coeff_a)
-                coeff_b = np.einsum('aj, ji,->ai', calc.mo_coeff[1], coeff_b)
+                coeff_a = np.einsum('aj, ji->ai', calc.mo_coeff[0], coeff_a)
+                coeff_b = np.einsum('aj, ji->ai', calc.mo_coeff[1], coeff_b)
                 self._mo_coeff_a = coeff_a
                 self._mo_coeff_b = coeff_b
                 self._occ_a = occ_a
@@ -172,7 +174,7 @@ class APOSTBase(object):
                 # Because doubly occupied, occupations dived by 2
                 occ, coeff = np.flip(occ / 2.0), np.flip(coeff, axis=1)
                 # Transform to AO basis. Note: PySCF returns the dm in AO basis if calc.make_rdm1(ao_repr=True), default is False
-                coeff = np.einsum('aj, ji,->ai', calc.mo_coeff,  coeff)
+                coeff = np.einsum('aj, ji->ai', calc.mo_coeff,  coeff)
                 self._mo_coeff_a = coeff
                 self._mo_coeff_b = coeff
                 self._occ_a = occ
@@ -185,8 +187,8 @@ class APOSTBase(object):
         else:
             if self._ccsd:
                 logger.info(f'  Post-Hartree Fock CCSD' )
-            elif self._casscf:
-                logger.info(f'  Post-Hartree Fock CASSCF')
+            elif self._cas:
+                logger.info(f'  Post-Hartree Fock CAS')
         logger.info(f'  Unrestricted : {self._unrestr}')
         logger.info(f'  DFT : {self._dft}\n')
 
@@ -440,6 +442,7 @@ class Rpart(object):
         # Weights = radial(quadrature) + angular + becke
         self._weights = self._grid.weights
         self._grid_to_atom_idx = self._grid.atm_idx
+        self._quadrature_weights = self._grid.quadrature_weights
         if part_name == 'becke':
             self._aim_w = becke_w(self._coords, mol.atom_coords(), atnums, self._grid_to_atom_idx)
             self._aim_w_all_p = becke_w(self._coords, mol.atom_coords(), atnums, self._grid_to_atom_idx, all_points=True)
@@ -455,8 +458,7 @@ class Rpart(object):
         else:
             raise NotImplementedError(f"Unknown part name: {part_name}")
 
-        # Todo: decide what to do with computing the density. the question is how to minimize
-        # repetition of code as much as possible.
+        # Todo: decide what to do with computing the density. the question is how to minimize repetition of code as much as possible.
         # Evaluate density on a grid
         # Store computed atomic orbitals in a grid
         self._ao_eval_grid = eval_ao(mol, self._coords)
@@ -497,6 +499,10 @@ class Rpart(object):
         return self._weights
 
     @property
+    def quadrature_weights(self):
+        return self._quadrature_weights
+
+    @property
     def ao_eval_grid(self):
         return self._ao_eval_grid
 
@@ -532,21 +538,29 @@ class Rpart(object):
         # Note: if we regenerate the AIMs we need the DM. we could add a flag to make this an option besides the roation
         # or force it to alway pass it. For now passing it.
         # Warning: keep attention if we need to copy
-        # First substract atom coords from grid_coords
-        grid_coords2_pre_0 = copy.copy(self.grid_coords)[self.grid_to_atom_idx == 0] - at_coords[0]
-        grid_coords2_pre_1 = copy.copy(self.grid_coords)[self.grid_to_atom_idx == 1] - at_coords[1]
+        # First subtract atom coords from grid_coords
+        grid_coords2_pre = np.zeros((len(at_nums), self.grid_coords.shape[0], self.grid_coords.shape[1]))
+        grid_coords2_pre = [copy.copy(self.grid_coords)[self.grid_to_atom_idx == ia] - at_coords[ia] for ia in range(len(at_nums))]
+        print(len(grid_coords2_pre))
+        print(grid_coords2_pre[0].shape)
+        print(grid_coords2_pre[1].shape)
         # Todo: Once the code is more stable add debug printings
 
         # 1. Get all the grid points
-        coords_to_roatate = copy.copy(self._grid.coords)
+        # coords_to_roatate = copy.copy(self._grid.coords)
         print(f'ROTATING THE GRID PHA={pha}, PHB={phb}')
         rot_mat =  scipy.spatial.transform.Rotation.from_euler('zx', [-phb, -pha], degrees=False).as_matrix()
-        grid_coords2_p0 = np.dot(grid_coords2_pre_0, rot_mat)
-        grid_coords2_p1 = np.dot(grid_coords2_pre_1, rot_mat)
-        grid_coords2_0 = grid_coords2_p0 + at_coords[0]
-        grid_coords2_1 = grid_coords2_p1 + at_coords[1]
+        # grid_coords2_p0 = np.dot(grid_coords2_pre_0, rot_mat)
+        # grid_coords2_p1 = np.dot(grid_coords2_pre_1, rot_mat)
+        # grid_coords2_0 = grid_coords2_p0 + at_coords[0]
+        # grid_coords2_1 = grid_coords2_p1 + at_coords[1]
+        # Todo: I should be able to modify each element wihout indexing
+        for ia in range(len(grid_coords2_pre)):
+            grid_coords2_pre[ia] = np.dot(grid_coords2_pre[ia], rot_mat)
+            grid_coords2_pre[ia] = grid_coords2_pre[ia] + at_coords[ia]
 
-        grid_coords2 = np.vstack((grid_coords2_0, grid_coords2_1))
+        # grid_coords2 = np.vstack((grid_coords2_0, grid_coords2_1))
+        grid_coords2 = np.vstack(grid_coords2_pre)
         # Generate the corresponding new AIM weights
         if self.part_name == 'becke':
             aim_rot = becke_w(grid_coords2, at_coords, at_nums, self._grid_to_atom_idx)

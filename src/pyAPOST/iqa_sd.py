@@ -14,6 +14,7 @@ import logging
 from pyscf.dft.numint import eval_ao, eval_rho
 from pyscf.dft.libxc import eval_xc, is_hybrid_xc, hybrid_coeff
 
+from pyAPOST.utils_iqa import bod_dens
 from pyAPOST.utils import out_summary
 
 
@@ -516,6 +517,17 @@ def ee_dft_energy_interatomic(at_nums, xc_code, xc_type, eval_mo_grid1, eval_mo_
         #         'MOs gradient should be passed as a numpy array with dimensions (deriv coordinate, points, MOs)')
         # Initialize grad_bod
 
+    # TEST BOD density from 3-RDM
+    # bod_dens(at_nums, eval_mo_grid1, eval_mo_grad_grid1, qw, aim_w, atgrid_idx)
+    print('CALLING BOD 3RDM')
+    bod_3rdm, bod_grad_3rdm = bod_dens(at_nums, eval_mo_grid1, eval_mo_grad_grid1, qw, aim_w, atgrid_idx, aim_w_allp)
+    print(bod_3rdm.shape)
+    print(bod_grad_3rdm.shape)
+
+
+
+
+
     # BOD density and GRAD BOD
     if spin == 1:
         bod = np.zeros((len(at_nums), len(at_nums),2, eval_mo_grid1[0].shape[1]))
@@ -551,8 +563,13 @@ def ee_dft_energy_interatomic(at_nums, xc_code, xc_type, eval_mo_grid1, eval_mo_
                     for j in range(eval_mo_grid1.shape[0]):
                         sij_a = np.sum(eval_mo_grid1[i] * eval_mo_grid1[j]  * qw * aim_w_allp[ia] * aim_w)
                         sij_b = np.sum(eval_mo_grid1[j] * eval_mo_grid1[i] * qw* aim_w_allp[ib]* aim_w)
+                        # print('sij_a', sij_a)
+                        # print('sij_b', sij_b)
                         # 2 factor because restricted
                         bod[ia, ib] +=  2 *(aim_w_allp[ia]* sij_b + aim_w_allp[ib] * sij_a)* eval_mo_grid1[i] * eval_mo_grid1[j]
+                        # bod[ia, ib] +=  2 *(sij_b +  aim_w_allp[ib] *sij_a)* eval_mo_grid1[i] * eval_mo_grid1[j]
+                        # bod[ia, ib] +=  2 *(aim_w_allp[ia] +  aim_w_allp[ib])* eval_mo_grid1[i] * eval_mo_grid1[j]
+                        # print('t1', eval_mo_grid1[i] * eval_mo_grid1[j] * (sij_b + sij_a))
                         if xc_type == 'GGA':
                             grad_bod[ia, ib] += 4*(aim_w_allp[ia] * sij_b + aim_w_allp[ib] * sij_a)[None, :] * eval_mo_grad_grid1[:, i, :] * eval_mo_grid1[None, j, :]
 
@@ -560,14 +577,20 @@ def ee_dft_energy_interatomic(at_nums, xc_code, xc_type, eval_mo_grid1, eval_mo_
 
     # Integrate BOD
     # Add threshold between atoms?
+    print('t2')
+    print(aim_w_allp[0])
+    print(aim_w_allp[1])
     int_bod = np.zeros((len(at_nums), len(at_nums)))
     for ia, a in enumerate(at_nums):
         for ib in range(ia + 1):
             if ia != ib:
                 print('BOD int', ia, ib)
                 # int_bod[ia, ib] = np.sum(bod[ia,ib] * qw* aim_w, axis=-1)
+                print(bod[ia,ib])
                 print(f"Integration BOD",   np.sum(bod[ia,ib] * qw* aim_w, axis=-1))
+                print(f"Integration BOD",   np.sum(bod_3rdm[ia,ib] * qw* aim_w, axis=-1))
 
+    # assert 5 == 6
     dft_pairwise = np.zeros((len(at_nums), len(at_nums)))
     if xc_type == 'LDA':
         # LDA with BOD density
@@ -578,11 +601,14 @@ def ee_dft_energy_interatomic(at_nums, xc_code, xc_type, eval_mo_grid1, eval_mo_
                         r = eval_xc(xc_code, (bod[ia,ib][0],bod[ia,ib][1]) , spin=spin)
                         dft_pairwise[ia, ib] = np.sum(r[0] *(bod[ia,ib][0] + bod[ia,ib][1])* qw * aim_w**2)
                     elif spin == 0:
-                        r = eval_xc(xc_code, bod[ia, ib], spin=spin)
-                        dft_pairwise[ia, ib] = np.sum(r[0] *bod[ia,ib]* qw * aim_w**2)
+                        r1 = eval_xc(xc_code, bod[ia, ib], spin=spin)
+                        r2 = eval_xc(xc_code, bod_3rdm[ia, ib], spin=spin)
+                        print(np.sum(r1[0] *bod[ia,ib]* qw * aim_w**2))
+                        print(np.sum(r2[0] *bod_3rdm[ia,ib]* qw * aim_w**2))
+                        dft_pairwise[ia, ib] = np.sum(r1[0] *bod[ia,ib]* qw * aim_w**2)
 
 
-
+        assert 5 == 6
     # GGA with BOD gradient
     elif xc_type == 'GGA':
         # Pass the bod and the grad_bod to libxc
@@ -599,16 +625,24 @@ def ee_dft_energy_interatomic(at_nums, xc_code, xc_type, eval_mo_grid1, eval_mo_
                         dft_pairwise[ia, ib] = np.sum(r[0] *(bod_data[0, 0, :] + bod_data[1, 0, :])* qw * aim_w**2)
 
                     elif spin == 0:
-                        bod_data = np.zeros((4, eval_mo_grid1.shape[1]))
-                        bod_data[0, :] = bod[ia,ib]
-                        bod_data[1:, :] = grad_bod[ia,ib]
-                        r = eval_xc(xc_code, bod_data, spin=spin)
-                        dft_pairwise[ia, ib] = np.sum(r[0] * bod[ia, ib] * qw * aim_w**2)
+                        bod_data_o = np.zeros((4, eval_mo_grid1.shape[1]))
+                        bod_data_alt = np.zeros((4, eval_mo_grid1.shape[1]))
+                        bod_data_o[0, :] = bod[ia,ib]
+                        bod_data_alt[0, :] = bod_3rdm[ia,ib]
+                        bod_data_o[1:, :] = grad_bod[ia,ib]
+                        bod_data_alt[1:, :] = bod_grad_3rdm[ia,ib]
+                        r_o = eval_xc(xc_code, bod_data_o, spin=spin)
+                        r_alt = eval_xc(xc_code, bod_data_alt, spin=spin)
+                        print(np.sum(r_o[0] * bod[ia, ib] * qw * aim_w**2))
+                        print(np.sum(r_alt[0] * bod_3rdm[ia, ib] * qw * aim_w**2))
+                        dft_pairwise[ia, ib] = np.sum(r_o[0] * bod[ia, ib] * qw * aim_w**2)
+                        # dft_pairwise[ia, ib] = np.sum(r_alt[0] * bod[ia, ib] * qw * aim_w**2)
 
     print(dft_pairwise)
 
 
     #metaGGA needs the laplacian: Not implemented
+    assert 5 == 6
 
     return dft_pairwise, int_bod
 
@@ -724,6 +758,9 @@ def iqa_interatomic(APOSTBase, ph2=0.162, rij_v=1e-5, ncpus=1):
     # First one electron terms
     iqa_r_a, iqa_r_b = iqa_atomic(APOSTBase, ee_hf=False, out=False)
 
+
+    # bod_dens(at_nums, eval_mo_grid1_a, eval_mo_grad_grid1_a, qw, mol_w, atgrid_idx, eval_ao_grid1, dm_a, APOSTBase.part.aim_w_allp)
+
     # Start by unrestricted
     if APOSTBase.unrestr:
         eval_mo_grid1_all = np.zeros((eval_mo_grid1_a.shape[0] + eval_mo_grid1_b.shape[0],  eval_mo_grid1_a.shape[1]))
@@ -734,20 +771,20 @@ def iqa_interatomic(APOSTBase, ph2=0.162, rij_v=1e-5, ncpus=1):
         eval_mo_grid2_all[: eval_mo_grid2_a.shape[0], :] = eval_mo_grid1_a
         eval_mo_grid2_all[: eval_mo_grid2_b.shape[0], :] = eval_mo_grid1_b
 
-        iqa_r_b['at_coul'], _ = ee_hf_energy_interatomic(at_nums,
-                                                        grid_coords1,
-                                                          grid_coords2,
-                                                          eval_mo_grid1_all,
-                                                          eval_mo_grid2_all,
-                                                         occ_a,
-                                                          qw,
-                                                          mol_w,
-                                                          mol_w_2,
-                                                          atgrid_idx,
-                                                          rij_v=rij_v,
-                                                          ncpus=ncpus,
-                                                          coul=True,
-                                                          x=False)
+        # iqa_r_b['at_coul'], _ = ee_hf_energy_interatomic(at_nums,
+        #                                                 grid_coords1,
+        #                                                   grid_coords2,
+        #                                                   eval_mo_grid1_all,
+        #                                                   eval_mo_grid2_all,
+        #                                                  occ_a,
+        #                                                   qw,
+        #                                                   mol_w,
+        #                                                   mol_w_2,
+        #                                                   atgrid_idx,
+        #                                                   rij_v=rij_v,
+        #                                                   ncpus=ncpus,
+        #                                                   coul=True,
+        #                                                   x=False)
         # if xc_type != 'LDA' or xc_type is None:
         if xc_type is None or iqa_r_b.get('coeff_mix', None) is not None:
             # HF exchange for alpha and beta separately because not cross terms
@@ -802,8 +839,8 @@ def iqa_interatomic(APOSTBase, ph2=0.162, rij_v=1e-5, ncpus=1):
         iqa_r_a['t_coul'], iqa_r_a['t_exch'] = np.sum(np.triu(iqa_r_a['at_coul'])), np.sum(np.triu(iqa_r_a['at_exch']))
 
     if APOSTBase.dft:
-        aa_at_dft = copy.copy(iqa_r_b['at_dft_xc'])
         if APOSTBase.unrestr:
+            aa_at_dft = copy.copy(iqa_r_b['at_dft_xc'])
             iqa_r_b['at_dft_xc'], iqa_r_b['bod'] = ee_dft_energy_interatomic(at_nums, xc_code, xc_type,
                                                                              (eval_mo_grid1_a, eval_mo_grid1_b),
                                                                              (eval_mo_grad_grid1_b, eval_mo_grad_grid1_b),
@@ -823,6 +860,7 @@ def iqa_interatomic(APOSTBase, ph2=0.162, rij_v=1e-5, ncpus=1):
             iqa_r_b['t_dft_xc'] = np.sum(np.triu(iqa_r_b['at_dft_xc']))
 
         else:
+            aa_at_dft = copy.copy(iqa_r_a['at_dft_xc'])
             iqa_r_a['at_dft_xc'], iqa_r_a['bod'] = ee_dft_energy_interatomic(at_nums, xc_code,
                                                                              xc_type,
                                                                              eval_mo_grid1_a,
@@ -837,6 +875,10 @@ def iqa_interatomic(APOSTBase, ph2=0.162, rij_v=1e-5, ncpus=1):
                 # iqa_r_a['t_dft_xc'] = iqa_r_a['t_dft_xc'] * (1 - iqa_r_a['coeff_mix'])
                 # iqa_r_a['at_dft_xc'] = iqa_r_a['at_dft_xc'] * (1 - iqa_r_a['coeff_mix'])
                 iqa_r_a['t_exch'] = iqa_r_a['t_exch'] * iqa_r_a['coeff_mix']
+            for ia in range(len(at_nums)):
+                iqa_r_a['at_dft_xc'][ia, ia] = aa_at_dft[ia] - 0.5 * np.sum(iqa_r_a['at_dft_xc'][:, ia])
+                # print('DEV: Total DFT from atomic', )
+            iqa_r_a['t_dft_xc'] = np.sum(np.triu(iqa_r_a['at_dft_xc']))
 
         # elif xc_type != 'LDA':
         #     iqa_r_a.pop('t_exch')
