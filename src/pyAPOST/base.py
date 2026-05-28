@@ -90,14 +90,16 @@ class APOSTBase(object):
 
         # Sort calc type and set mo_coeffs, mo_occ and dm
         # todo: Put test to be sure we fill the variables correctly
-        if any([i in self._kind_calc for i in ["RHF", "RKS", "UHF", "UKS", "KS", "dftd3"]]):
+        # todo: we used to include dftd3 and KS. Look into it if it's used for both rest or unres
+        # if any([i in self._kind_calc for i in ["RHF", "RKS", "UHF", "UKS", "KS", "dftd3"]]):
+        if any([i in self._kind_calc for i in ["RHF", "RKS", "UHF", "UKS", "KS"]]):
             self._sd = True
-            if any([i in self._kind_calc for i in ["RKS", "UKS", "KS", "dftd3"]]):
+            if any([i in self._kind_calc for i in ["RKS", "UKS", "KS"]]):
                 self._dft = True
                 xc_type = calc._numint._xc_type(calc.xc)
                 self._xc_code = (calc.xc, xc_type)
             # Check unrestricted
-            if any([i in self._kind_calc for i in ["UHF", "UKS", "ROHF"]]):
+            if any([i in self._kind_calc for i in ["UHF", "UKS"]]):
                 self._unrestr = True
                 # Q: APOSTpy file solves for the generalized eigenvalue for this type too.
                 # Assuming first item is for alpha and second for beta
@@ -112,8 +114,24 @@ class APOSTBase(object):
                 print('BETA', self._occ_b)
                 print('TOTAL BETA', np.sum(self._occ_b))
                 self._s = calc.get_ovlp()
-                # print(np.trace(np.dot(self._dm_a, self._s)))
-            else:
+            if any([i in self._kind_calc for i in ["ROKS", "ROHF"]]):
+                self._unrestr = True
+                # Q: APOSTpy file solves for the generalized eigenvalue for this type too.
+                # Assuming first item is for alpha and second for beta
+                self._mo_coeff_a = calc.mo_coeff
+                self._mo_coeff_b = calc.mo_coeff
+                self._occ_a = np.zeros_like(calc.mo_occ)
+                self._occ_b = np.zeros_like(calc.mo_occ)
+                self._occ_a[calc.mo_occ > 0] = 1
+                self._occ_b[calc.mo_occ > 1] = 1
+                self._dm_a, self._dm_b = calc.make_rdm1()
+                logger.info('OCCUPATIONS (RO/UNRESTRICTED)')
+                print('ALPHA', self._occ_a)
+                print('TOTAL ALPHA', np.sum(self._occ_a))
+                print('BETA', self._occ_b)
+                print('TOTAL BETA', np.sum(self._occ_b))
+                self._s = calc.get_ovlp()
+            if any([i in self._kind_calc for i in ["RHF", "RKS"]]):
                 self._mo_coeff_a = calc.mo_coeff
                 self._mo_coeff_b = calc.mo_coeff
                 self._occ_a = calc.mo_occ
@@ -553,9 +571,6 @@ class APOSTBase(object):
 
 class Rpart(object):
     """Real space part object"""
-    # atomic weights
-    # integration grids
-    # Need to implement the partitions outside
     # Optional: allow to pass coords and weights bypassing relying on the PySCF Grids
     # todo: allow to specify radii type, radii method and empirical values (Bragg/Trehluer)
 
@@ -787,7 +802,6 @@ class Rpart(object):
         # grid_coords2_p1 = np.dot(grid_coords2_pre_1, rot_mat)
         # grid_coords2_0 = grid_coords2_p0 + at_coords[0]
         # grid_coords2_1 = grid_coords2_p1 + at_coords[1]
-        # Todo: I should be able to modify each element wihout indexing
         for ia in range(len(grid_coords2_pre)):
             grid_coords2_pre[ia] = np.dot(grid_coords2_pre[ia], rot_mat)
             grid_coords2_pre[ia] = grid_coords2_pre[ia] + at_coords[ia]
@@ -805,21 +819,10 @@ class Rpart(object):
         return (grid_coords2, aim_rot)
 
 
-        print(self.grid_coords.shape)
-        # subset of points
-        testp = self.grid_coords[0, :]
-        print(testp)
-        assert 5 == 6
-
-
-        
-
 class Hpart(object):
-    # Eta, transformation matrix
-    # Init could be modified by taking out passing mol and instead all the information that we extract from it
-    # this could allow more flexibility
+    """Hpart class"""
     def __init__(self, part_name, mol, frags=None):
-        # DEV: Generate Eta matrices
+        # Generate Eta matrices
         # First parse necessary data from Mole object
         self._part_name = part_name
         self.num_ao = mol.nao

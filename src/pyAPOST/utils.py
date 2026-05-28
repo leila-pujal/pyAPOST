@@ -13,7 +13,6 @@ def eval_dens(mol, dm, coords):
     dens_ao = eval_ao(mol, coords)
     dens = np.zeros((dens_ao.shape[0]))
     print(dens.shape,  dens_ao.shape, coords.shape)
-    # assert 5 == 6
     for mu in range(dens_ao.shape[1]):
         for nu in range(dens_ao.shape[1]):
             dens += dm[mu, nu] * dens_ao.T[mu, :] * dens_ao.T[nu, :]
@@ -36,8 +35,22 @@ def out_summary(iqa_data, at_nums, total_energy):
             f"Electron-Nucleus attraction energy (PySCF/Libcint): {iqa_data[1]['en_analyt']: .5f}")
         diff = abs(iqa_data[1]['t_en'] - iqa_data[1]['en_analyt'])
         print('DIFF (kcal/mol) ', diff / 0.0015936014376406278)
+
+        print('Condensed atomic EN energy')
         for idx, at in enumerate(at_nums):
             print(f"{at}   {iqa_data[1]['at_en_cond'][idx]: .5f}")
+        print('Atomic EN energy matrix')
+        print("         " + "       ".join([str(a) for a in at_nums]))
+        for idx1, at1 in enumerate(at_nums):
+            row_r = []
+            for idx2, at2 in enumerate(at_nums):
+                row_r.append(
+                    str(round(iqa_data[1]['at_en'][idx1, idx2], 5)))
+            print(f"{at}   " + " ".join(row_r))
+        print()
+
+
+
         print('------------------------------------')
         print(f"Kinetic energy:  {iqa_data[1]['t_kin']:.5f}")
         print(f"Kinetic energy(PySCF/Libcint):  {iqa_data[1]['kin_analyt']: .5f}")
@@ -183,8 +196,18 @@ def out_summary(iqa_data, at_nums, total_energy):
             f"Electron-Nucleus attraction energy (PySCF/Libcint): {iqa_data[0]['en_analyt']: .5f}")
         diff = abs(iqa_data[0]['t_en'] - iqa_data[0]['en_analyt'])
         print('DIFF (kcal/mol) ', diff / 0.0015936014376406278)
+        print('Condensed atomic EN energy')
         for idx, at in enumerate(at_nums):
             print(f"{at}   {iqa_data[0]['at_en_cond'][idx]: .5f}")
+        print('Atomic EN energy matrix')
+        print("         " + "       ".join([str(a) for a in at_nums]))
+        for idx1, at1 in enumerate(at_nums):
+            row_r = []
+            for idx2, at2 in enumerate(at_nums):
+                row_r.append(
+                    str(round(iqa_data[0]['at_en'][idx1, idx2], 5)))
+            print(f"{at}   " + " ".join(row_r))
+        print()
         print('------------------------------------')
         print(f"Kinetic energy:  {iqa_data[0]['t_kin']:.5f}")
         print(f"Kinetic energy(PySCF/Libcint):  {iqa_data[0]['kin_analyt']: .5f}")
