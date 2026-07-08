@@ -39,7 +39,7 @@ def smo_hilb(APOSTBase, gen=False):
             occ = occ[occ > thresh]
 
         # Post-Hartree Fock
-        elif APOSTBase._cas or APOSTBase._ccsd:
+        elif APOSTBase.cas or APOSTBase.ccsd:
             # In APOSTbase we always generate dm_a and dm_b. For generalized effos original code APOSTpy works with paired Dm by calling
             # mcscf.addons.make_rdm1() instead of mcscf.addons.make_rdm1s(). Internally PySCF generates Dm returned by mcscf.addons.make_rdm1()
             # by adding dma and dmb in pyscf/fci/direct_spin1.py def make_rdm1. Here we are adding coefficents
