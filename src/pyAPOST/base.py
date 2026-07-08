@@ -11,7 +11,7 @@ from pyscf import lo
 from pyscf.dft.numint import eval_ao
 from pyscf.dft.gen_grid import Grids, gen_atomic_grids, radi
 from pyscf.dft import gen_grid
-
+from pyscf.gto import Mole
 
 from pyAPOST.part_schemes import becke_w, tfvc_w
 
@@ -25,7 +25,7 @@ logger = logging.getLogger()
 # INFO: PySCF works with NPArrayWithTag from its own library
 
 # TODO: Use attr library to lock the value of attributes once they are initialized after a new object.
-# TODO: Decide how to pass the log level. Right now it's changed on EOS function but maybe it should be pased here
+# TODO: Decide how to pass the log level. Right now it's changed on EOS function but maybe it should be passed here
 # the potential problem is that if left unchecked, because we are parsing from pyscf Mole/Calc if they change for whatever
 # reason that could be traced to the related variables inside pyAPOST. A brute force solution would be to use
 # copy library but it would be annoying.
@@ -36,12 +36,34 @@ class APOSTBase(object):
     Arguments:
     mol: object of class Mole from PySCF
     calc: object of method calculation from PySCF
+    part_name: (str) Partition name. Includes: Lowdin, Meta-Lowdin, Nao, Becke, TFVC
+    frags: (list, numpy array or set types): list, array or set including and iterable for each fragment specified
     """
 
     def __init__(self, mol, calc, part_name=None, frags=None, rpart_specs=None):
 
         #DEV:saving mol
         APOSTBase._mol = mol
+        APOSTBase._calc = calc
+
+        # Check passed variables for mol and calc
+        if not isinstance(mol, Mole):
+            raise TypeError('Mol object that contains molecule information must be of type Mole from PySCF')
+
+        self._kind_calc = str(type(calc))
+        if not any([i in self._kind_calc for i in ["RHF", "RKS", "UHF", "UKS", "KS", "ROKS", "ROHF", "CASSCF","CASCI", "CCSD", "UCCSD"]]):
+            raise TypeError(f'Calc object should correspond to a PySCF calculation. Got {self._kind_calc}')
+
+        # Check that types for part_name, frag and rpart_specs
+        if part_name is not None and not isinstance(part_name, str):
+            raise TypeError(f'Part name should be of type str. Got {type(part_name)}')
+        if frags is not None:
+            print(isinstance(frags, list), isinstance(frags, np.ndarray), isinstance(frags, tuple))
+            if not (isinstance(frags, list) or not isinstance(frags, np.ndarray) or not isinstance(frags, tuple)):
+                raise TypeError(f'Frags should be a list, np.array or set. Got{type(frags)}')
+        if rpart_specs is not None:
+            if not isinstance(rpart_specs, dict):
+                raise TypeError(f'rpart_specs shousd a dict. Got{type(rpart_specs)}')
 
         logger.info("  INITIALIZING APOSTBase object for Hilbert and Real space analysis")
         logger.info("\n\n")
@@ -56,7 +78,10 @@ class APOSTBase(object):
         self._at_nums = [mol.atom_nelec_core(ia) + mol.atom_charge(ia) for ia in range(mol.natm)]
         self._alpha_elec = mol.nelec[0]
         self._beta_elec = mol.nelec[1]
-        self._e_tot = calc.e_tot
+        if isinstance(calc, dict):
+            self._e_tot = calc['e_tot']
+        else:
+            self._e_tot = calc.e_tot
         #
         # Basis set information
         self._nbasis = mol.nbas # Number of shells
@@ -77,7 +102,6 @@ class APOSTBase(object):
         # Calculation information
         # Q: we fill some info based on the type of calc (rest/unres, SD/Multiref)
         # Check if calc is SD
-        self._kind_calc = str(type(calc))
 
         # initializing flags
         self._unrestr = False
@@ -92,12 +116,11 @@ class APOSTBase(object):
         # todo: Put test to be sure we fill the variables correctly
         # todo: we used to include dftd3 and KS. Look into it if it's used for both rest or unres
         # if any([i in self._kind_calc for i in ["RHF", "RKS", "UHF", "UKS", "KS", "dftd3"]]):
-        if any([i in self._kind_calc for i in ["RHF", "RKS", "UHF", "UKS", "KS"]]):
+        if any([i in self._kind_calc for i in ["RHF", "RKS", "UHF", "UKS", "KS", "ROKS", "ROHF"]]):
             self._sd = True
             if any([i in self._kind_calc for i in ["RKS", "UKS", "KS"]]):
                 self._dft = True
-                xc_type = calc._numint._xc_type(calc.xc)
-                self._xc_code = (calc.xc, xc_type)
+                self._xc_code = (calc.xc, calc._numint._xc_type(calc.xc))
             # Check unrestricted
             if any([i in self._kind_calc for i in ["UHF", "UKS"]]):
                 self._unrestr = True
@@ -329,8 +352,6 @@ class APOSTBase(object):
                         dm2[k,i,i,l] -= dm1[k*2, l*2] + dm1[k*2+1, l*2+1]
 
 
-
-
             # fill dm2 with dm2_active from pyscf
             # change indices order from 1212 to 1122 !Q: for now keeping them the same. Check APOST
             # dm2_act = np.transpose(dm2_act, axes=(0, 2, 1,3))
@@ -353,12 +374,12 @@ class APOSTBase(object):
                 # for i in range(norb):
                 for j in range(self._cas_data['ncore']):
                     # for j in range(norb):
-                    t1 +=dm2[i,i,j,j]
+                    t1 += dm2[i,i,j,j]
             print('CHECK TRACE INACTIVE ORBITALS (N_inact(N_inact-1) ', t1)
             for i in range(self._cas_data['ncore'], norb):
                 for j in range(self._cas_data['ncore'], norb):
                     t2 += dm2[i, i, j, j]
-            print('CHECK TRACE ACTIVE ORBITALS (N_active(N_active-1) ', t1)
+            print('CHECK TRACE ACTIVE ORBITALS (N_active(N_active-1) ', t2)
 
             for i in range(norb):
                 for j in range(norb):
@@ -366,10 +387,12 @@ class APOSTBase(object):
             print('TOTAL TRACE', t3)
 
             # Saving DM1s and DM2
-            self._dm1 = dm1 # spinless
+            self._dm1 = dm1 # spinorbitals
             self._dm1_a = dm1_a
             self._dm1_b = dm1_b
             self._dm2 = dm2
+            # Todo: decide if to keep
+            self._dij = dij # spinless
 
             # For now only protected variables of the class because we are not sure if we will use all of them consistently
             # through the code
@@ -408,6 +431,8 @@ class APOSTBase(object):
                 self._mo_coeff_b = coeff
                 self._occ_a = occ
                 self._occ_b = occ
+        else:
+            raise TypeError(f'Unknown kind calculation {self._kind_calc}')
 
         # Print Calc info
         logger.info(f'  Calc INFORMATION')
@@ -436,11 +461,18 @@ class APOSTBase(object):
                     raise TypeError(" rpart_specs must be a dict")
             self._part = Rpart(part_name, mol, dm, self._at_nums, frags=frags, grid_specs=rpart_specs)
         else:
-            raise ValueError("Could not identify partition. Choose from: Mulliken,Lowdin,Meta-Lowdin,IAO,NAO")
+            raise ValueError("Could not identify partition. Choose from: Mulliken,Lowdin,Meta-Lowdin,NAO")
 
     @property
     def natm(self):
+        """Number of atoms of the molecule
+
+        Returns:
+            natm: np.ndarray(N_atm)
+
+        """
         return self._natm
+
     @property
     def at_coords(self):
         return self._at_coords
@@ -456,6 +488,12 @@ class APOSTBase(object):
     @property
     def sd(self):
         return self._sd
+    @property
+    def cas(self):
+        return self._cas
+    @property
+    def ccsd(self):
+        return self._ccsd
     @property
     def dft(self):
         return self._dft
@@ -570,20 +608,81 @@ class APOSTBase(object):
 # todo: change zfrags and frags from duplicated code in Hpart/Rpart to APOSTBase class
 
 class Rpart(object):
-    """Real space part object"""
+    """Real space part object. This class contains all the necessary data functionality to
+    generate real space descriptor values. This includes
+
+    - 3-dimensional molecular integration grid (Build upon PySCF dft module (gen_grid.py/numint.py)):
+    - Partition weights for atoms or specified fragments
+
+    Attributes:
+    -----------
+        - Part name: str
+        - grid_coords: np.ndarray(Npoints, 3)
+        - grid_weights: np.ndarray(Npoints)
+        - ao_eval_grid: np.ndarray(Npoints, N_AO)
+        - dens_grid: np.ndarray(Npoints)
+        - grid_to_atom: np.ndarray(Npoints)
+        - aim_w: np.ndarray(Npoints)
+        _ aim_w_allp: np.ndarray(N_atom, Npoints)
+        - frags: np.ndarray(N_frags)
+        - zfrags: np.ndarray(N_frags)
+
+    Methods:
+    -------
+        rotate_grid: Rotates a 3D molecular grid in two polar angles (pha, phb)
+
+
+    """
     # Optional: allow to pass coords and weights bypassing relying on the PySCF Grids
     # todo: allow to specify radii type, radii method and empirical values (Bragg/Trehluer)
 
     def __init__(self, part_name, mol, dm, atnums, frags=None, sort_grids=False, grid_specs=None):
+        r"""Initialize Rpart class object
 
+        Parameters:
+        ----------
+            part_name: str
+                Partition name. Includes: Becke, TFVC
+            mol: Instance of pyscf.gto.Mole
+                Contains molecule and basis set information
+            dm: np.array(AO, AO)
+                np.dot(mo_coeff*occ, mo_coeff.T)
+            atnums: np.array(N_atms)
+            frags: List, np.ndarray(N_frags) or set
+                Contains the Nfrags elements specifying the indices of atoms composing a fragment
+            sort_grids: bool(default: False)
+            grid_specs: dict
+                Dictionary containing grid specifications. These include:
+                    - 'radi_method': str
+                            'radi_becke', 'radi_treutler', 'radi_delley', 'radi_mura_knowles', 'radi_gauss_chebyshev'
+                    - 'prune': str
+                        nwchem_prune, sg
+                    - 'level': int
+                        1-9
+                    - 'prune': str
+                        'nwchem_prune', 'sg1_prune', 'treutler_prune'
+
+        """
         self._part_name = part_name
         logger.info(f'  Initializing Rpart : {part_name.upper()} \n')
-        # Keeping mol for now in a protected attribute because it is needed in other places outside init
-        # Note: Think of a way of accessing mol differently. Maybe Rpart a subclass of APOSTBase? I still need
-        # the at_nums and at_coords. Either this is transformed as a subclass only accessible from an APOSTBase one
-        # or all this information is kept.
-        self._mol = mol
 
+        # DM
+        if isinstance(dm, tuple):
+            if not (isinstance(dm[0], np.ndarray) and dm[0].ndim == 2 and dm[0].dtype == float):
+                raise TypeError("One-electron density matrix must be a 2D-array float `dtype`")
+            if dm[0].shape[0] != dm[0].shape[1]:
+                raise ValueError("One-electron density matrix must be a square matrix.")
+            if not np.allclose(dm[0], dm[0].T):
+                raise ValueError("One-electron density matrix must be symmetric.")
+        elif isinstance(dm, np.ndarray):
+            if not (dm.ndim == 2 and dm.dtype == float):
+                raise TypeError("One-electron density matrix must be a 2D-array float `dtype`")
+            if dm.shape[0] != dm.shape[1]:
+                raise ValueError("One-electron density matrix must be a square matrix.")
+            if not np.allclose(dm, dm.T):
+                raise ValueError("One-electron density matrix must be symmetric.")
+        else:
+            raise TypeError(f"One-electron density matrix must be passed as a numpy array or tuple of numpy arrays. Got {type(dm)}")
 
         # If frags are None then it computes it for atoms
         # First check frags argument. Needs to be a list, set or numpy array.
@@ -750,6 +849,7 @@ class Rpart(object):
     def quadrature_weights(self):
         return self._quadrature_weights
 
+    # Note: This property might not be needed as we compute the ao density when needed in each module
     @property
     def ao_eval_grid(self):
         return self._ao_eval_grid
@@ -778,7 +878,7 @@ class Rpart(object):
     def zfrags(self):
         return self._zfrags
 
-    def rotate_grid(self, at_coords, at_nums, pha, phb, dm):
+    def rotate_grid(self, at_coords, at_nums, pha, phb, dm, mol=None):
         """Method to rotate atomic grids
         it is a compose rotation through the x and z directions with -pha and -phb angles
         """
@@ -787,36 +887,30 @@ class Rpart(object):
         # or force it to alway pass it. For now passing it.
         # Warning: keep attention if we need to copy
         # First subtract atom coords from grid_coords
-        grid_coords2_pre = np.zeros((len(at_nums), self.grid_coords.shape[0], self.grid_coords.shape[1]))
         grid_coords2_pre = [copy.copy(self.grid_coords)[self.grid_to_atom_idx == ia] - at_coords[ia] for ia in range(len(at_nums))]
-        print(len(grid_coords2_pre))
-        print(grid_coords2_pre[0].shape)
-        print(grid_coords2_pre[1].shape)
         # Todo: Once the code is more stable add debug printings
-
         # 1. Get all the grid points
         # coords_to_roatate = copy.copy(self._grid.coords)
         print(f'ROTATING THE GRID PHA={pha}, PHB={phb}')
         rot_mat =  scipy.spatial.transform.Rotation.from_euler('zx', [-phb, -pha], degrees=False).as_matrix()
-        # grid_coords2_p0 = np.dot(grid_coords2_pre_0, rot_mat)
-        # grid_coords2_p1 = np.dot(grid_coords2_pre_1, rot_mat)
-        # grid_coords2_0 = grid_coords2_p0 + at_coords[0]
-        # grid_coords2_1 = grid_coords2_p1 + at_coords[1]
+        print(rot_mat)
         for ia in range(len(grid_coords2_pre)):
             grid_coords2_pre[ia] = np.dot(grid_coords2_pre[ia], rot_mat)
             grid_coords2_pre[ia] = grid_coords2_pre[ia] + at_coords[ia]
 
-        # grid_coords2 = np.vstack((grid_coords2_0, grid_coords2_1))
         grid_coords2 = np.vstack(grid_coords2_pre)
         # Generate the corresponding new AIM weights
         if self.part_name == 'becke':
             aim_rot = becke_w(grid_coords2, at_coords, at_nums, self._grid_to_atom_idx)
         elif self.part_name == 'tfvc':
-            aim_rot = tfvc_w(self._mol, dm, grid_coords2, at_coords, at_nums, self._grid_to_atom_idx)
+            if mol:
+                aim_rot = tfvc_w(mol, dm, grid_coords2, at_coords, at_nums, self._grid_to_atom_idx)
+            else:
+                raise ValueError(f'For TFVC weights the mol object is needed.')
         else:
             raise NotImplementedError(f"Unknown part name: {self.part_name}")
 
-        return (grid_coords2, aim_rot)
+        return grid_coords2, aim_rot
 
 
 class Hpart(object):
