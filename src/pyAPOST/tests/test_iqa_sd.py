@@ -1,64 +1,14 @@
 import numpy as np
-from numpy.testing import assert_raises, assert_almost_equal
-from numpy.testing import assert_equal, assert_almost_equal, assert_approx_equal, assert_allclose
+from numpy.testing import assert_allclose
 
 from pyscf import gto,scf,dft,lib
 
 from pyAPOST.base import APOSTBase
+from pyAPOST.tests.test_base import o2_pyscf
 from pyAPOST.iqa_sd import iqa_interatomic
 
 # Todo: check options to use with pytest to only check o2 or h2o tests
-
-def h2o_pyscf(method, spin, basis):
-    """Class to compute h2o molecule with pyscf specifying method and spin"""
-    with lib.with_omp_threads(1):
-        mol = gto.M(atom=[
-            [8, (-2.3534315116, 1.7976043966, 0.0000000000)],
-            [1, (-1.3674018242, 1.8792998063, 0.000000000)],
-            [1, (-2.6055654975, 2.7543473799, 0.0000000000)]], basis=basis)
-        mol.cart = False
-        mol.symmetry = False
-        mol.ms = spin
-        mol.build()
-
-        if method == 'RHF':
-            calc = scf.RHF(mol)
-        elif method == 'UHF':
-            calc = scf.UHF(mol)
-        elif len(method) == 2 and method[0] == 'RKS':
-            calc = dft.RKS(mol)
-            calc.xc = method[1]
-        elif len(method) == 2 and method[0] == 'UKS':
-            calc = dft.UKS(mol)
-            calc.xc = method[1]
-        calc.kernel()
-
-    return mol, calc
-
-def o2_pyscf(method, spin,basis):
-    """Class to compute h2o molecule with pyscf specifying method and spin"""
-    with lib.with_omp_threads(1):
-        mol = gto.M(atom=[
-            [8, (0.5845381, 1.3618218, 0.0)],
-            [8, (1.0054419, 2.3424182, 0.0)]], basis=basis)
-        mol.cart = False
-        mol.symmetry = False
-        mol.ms = spin
-        mol.build()
-        if method == 'RHF':
-            calc = scf.RHF(mol)
-        elif method == 'UHF':
-            calc = scf.UHF(mol)
-        elif len(method) == 2 and method[0] == 'RKS':
-            calc = dft.RKS(mol)
-            calc.xc = method[1].upper()
-        elif len(method) == 2 and method[0] == 'UKS':
-            calc = dft.UKS(mol)
-            calc.xc = method[1].upper()
-        calc.kernel()
-
-    return mol, calc
-
+# Todo: Specify the ncpus
 
 def test_o2_rhf_cc_pvtz_singlet():
     # Results are compared against Analytical values
