@@ -46,7 +46,7 @@ def out_summary(iqa_data, at_nums, total_energy):
             for idx2, at2 in enumerate(at_nums):
                 row_r.append(
                     str(round(iqa_data[1]['at_en'][idx1, idx2], 5)))
-            print(f"{at}   " + " ".join(row_r))
+            print(f"{at1}   " + " ".join(row_r))
         print()
 
 
@@ -85,7 +85,7 @@ def out_summary(iqa_data, at_nums, total_energy):
                     row_r = []
                     for idx2, at2 in enumerate(at_nums):
                         row_r.append(str(round(iqa_data[1]['at_coul'][idx1, idx2], 5)))
-                    print(f"{at}   " + " ".join(row_r))
+                    print(f"{at1}   " + " ".join(row_r))
                 # print(f"{at}   {iqa_data[0]['at_coul'][idx]: .5f}")
                 print()
         if 't_exch' in iqa_data[1].keys():
@@ -111,7 +111,7 @@ def out_summary(iqa_data, at_nums, total_energy):
                             row_r = []
                             for idx2, at2 in enumerate(at_nums):
                                 row_r.append(str(round(iqa_data[1]['at_exch'][idx1, idx2] * iqa_data[1]['coeff_mix'], 5)))
-                            print(f"{at}   " + " ".join(row_r))
+                            print(f"{at1}   " + " ".join(row_r))
                         # print(f"{at}   {iqa_data[0]['at_coul'][idx]: .5f}")
                         print()
                 else:
@@ -132,7 +132,7 @@ def out_summary(iqa_data, at_nums, total_energy):
                             row_r = []
                             for idx2, at2 in enumerate(at_nums):
                                 row_r.append(str(round(iqa_data[1]['at_exch'][idx1, idx2], 5)))
-                            print(f"{at}   " + " ".join(row_r))
+                            print(f"{at1}   " + " ".join(row_r))
                         # print(f"{at}   {iqa_data[0]['at_coul'][idx]: .5f}")
                         print()
         print()
@@ -157,7 +157,7 @@ def out_summary(iqa_data, at_nums, total_energy):
                     row_r = []
                     for idx2, at2 in enumerate(at_nums):
                         row_r.append(str(round(iqa_data[1]['at_dft_xc'][idx1, idx2], 5)))
-                    print(f"{at}   " + " ".join(row_r))
+                    print(f"{at1}   " + " ".join(row_r))
                 # print(f"{at}   {iqa_data[0]['at_coul'][idx]: .5f}")
             print(f"DTF Exchange-Correlation energy: {iqa_data[1]['t_dft_xc']: .5f}")
             print()
@@ -206,7 +206,7 @@ def out_summary(iqa_data, at_nums, total_energy):
             for idx2, at2 in enumerate(at_nums):
                 row_r.append(
                     str(round(iqa_data[0]['at_en'][idx1, idx2], 5)))
-            print(f"{at}   " + " ".join(row_r))
+            print(f"{at1}   " + " ".join(row_r))
         print()
         print('------------------------------------')
         print(f"Kinetic energy:  {iqa_data[0]['t_kin']:.5f}")
@@ -243,7 +243,7 @@ def out_summary(iqa_data, at_nums, total_energy):
                     row_r = []
                     for idx2, at2 in enumerate(at_nums):
                         row_r.append(str(round(iqa_data[0]['at_coul'][idx1, idx2], 5)))
-                    print(f"{at}   " + " ".join(row_r))
+                    print(f"{at1}   " + " ".join(row_r))
                 # print(f"{at}   {iqa_data[0]['at_coul'][idx]: .5f}")
                 print()
 
@@ -269,7 +269,7 @@ def out_summary(iqa_data, at_nums, total_energy):
                         row_r = []
                         for idx2, at2 in enumerate(at_nums):
                             row_r.append(str(round(iqa_data[0]['at_exch'][idx1, idx2] * iqa_data[0]['coeff_mix'], 5)))
-                        print(f"{at}   " + " ".join(row_r))
+                        print(f"{at1}   " + " ".join(row_r))
                     # print(f"{at}   {iqa_data[0]['at_coul'][idx]: .5f}")
                     print()
             else:
@@ -280,7 +280,7 @@ def out_summary(iqa_data, at_nums, total_energy):
                 print('Atomic HF Exchange energy:')
                 if len(iqa_data[0]['at_exch'].shape) == 1:
                     for idx, at in enumerate(at_nums):
-                        print(f"{at}   {iqa_data[0]['at_exch'][idx]: .5f}")
+                        print(f"{at1}   {iqa_data[0]['at_exch'][idx]: .5f}")
                     print()
                 elif len(iqa_data[0]['at_coul'].shape) == 2:
                     print('Full HF Exchange energy decomposition:')
@@ -290,7 +290,7 @@ def out_summary(iqa_data, at_nums, total_energy):
                         for idx2, at2 in enumerate(at_nums):
                             row_r.append(str(round(
                                 iqa_data[0]['at_exch'][idx1, idx2], 5)))
-                        print(f"{at}   " + " ".join(row_r))
+                        print(f"{at1}   " + " ".join(row_r))
                     # print(f"{at}   {iqa_data[0]['at_coul'][idx]: .5f}")
                     print()
         if 't_dft_xc' in iqa_data[0].keys():
@@ -299,7 +299,7 @@ def out_summary(iqa_data, at_nums, total_energy):
             print('Atomic DFT Exchange-Correlation energy:')
             if len(iqa_data[0]['at_dft_xc'].shape) == 1:
                 for idx, at in enumerate(at_nums):
-                    print(f"{at}   {iqa_data[0]['at_dft_xc'][idx]: .5f}")
+                    print(f"{at1}   {iqa_data[0]['at_dft_xc'][idx]: .5f}")
                 print()
             elif len(iqa_data[0]['at_dft_xc'].shape) == 2:
                 print('BOND ORDER')
@@ -313,7 +313,7 @@ def out_summary(iqa_data, at_nums, total_energy):
                     row_r = []
                     for idx2, at2 in enumerate(at_nums):
                         row_r.append(str(round(iqa_data[0]['at_dft_xc'][idx1, idx2], 5)))
-                    print(f"{at}   " + " ".join(row_r))
+                    print(f"{at1}   " + " ".join(row_r))
                 # print(f"{at}   {iqa_data[0]['at_coul'][idx]: .5f}")
                 print()
 
@@ -379,7 +379,7 @@ def out_summary_phf(iqa_data, at_nums, total_energy, correlation=False):
             row_r = []
             for idx2, at2 in enumerate(at_nums):
                 row_r.append(str(round(iqa_data[0]['at_coul'][idx1, idx2], 5)))
-            print(f"{at}   " + " ".join(row_r))
+            print(f"{at1}   " + " ".join(row_r))
         # print(f"{at}   {iqa_data[0]['at_coul'][idx]: .5f}")
         print()
     if 't_xc' in iqa_data[0].keys():
@@ -394,7 +394,7 @@ def out_summary_phf(iqa_data, at_nums, total_energy, correlation=False):
             row_r = []
             for idx2, at2 in enumerate(at_nums):
                 row_r.append(str(round(iqa_data[0]['at_xc'][idx1, idx2], 5)))
-            print(f"{at}   " + " ".join(row_r))
+            print(f"{at1}   " + " ".join(row_r))
         # print(f"{at}   {iqa_data[0]['at_coul'][idx]: .5f}")
         print()
     if correlation:
@@ -411,7 +411,7 @@ def out_summary_phf(iqa_data, at_nums, total_energy, correlation=False):
             row_r = []
             for idx2, at2 in enumerate(at_nums):
                 row_r.append(str(round(iqa_data[0]['at_x'][idx1, idx2], 5)))
-            print(f"{at}   " + " ".join(row_r))
+            print(f"{at1}   " + " ".join(row_r))
         # print(f"{at}   {iqa_data[0]['at_coul'][idx]: .5f}")
         print()
         print('Correlation')
@@ -425,7 +425,7 @@ def out_summary_phf(iqa_data, at_nums, total_energy, correlation=False):
             row_r = []
             for idx2, at2 in enumerate(at_nums):
                 row_r.append(str(round(iqa_data[0]['at_c'][idx1, idx2], 5)))
-            print(f"{at}   " + " ".join(row_r))
+            print(f"{at1}   " + " ".join(row_r))
         # print(f"{at}   {iqa_data[0]['at_coul'][idx]: .5f}")
 
         vee_calc = iqa_data[0]['t_c'] +iqa_data[0]['t_coul'] + iqa_data[0]['t_x']
@@ -439,9 +439,9 @@ def out_summary_phf(iqa_data, at_nums, total_energy, correlation=False):
         for k in iqa_data[0].keys():
             if k.startswith('t_'):
                 # print(k, iqa_data[0][k])
-                if k in ['t_x', 't_c']:
-                    pass
-                else:
+                # if k in ['t_x', 't_c']:
+                #     pass
+                # else:
                     total_sum_energy += iqa_data[0][k]
 
         print('TOTAL ENERGY (SUM OF COMPONENTS):', total_sum_energy)
@@ -449,3 +449,16 @@ def out_summary_phf(iqa_data, at_nums, total_energy, correlation=False):
         print('DIFF (AU) :', total_sum_energy - total_energy)
         print('DIFF (Kcal) :', (total_sum_energy - total_energy) / 0.0015936014376406278)
         #############################
+
+
+def out_bod(at_nums, bod_dict):
+    """Printing BOD results"""
+
+    for scheme in bod_dict.keys():
+        print(f'BOND ORDER: {scheme}')
+        for idx1, at1 in enumerate(at_nums):
+            row_r = []
+            for idx2, at2 in enumerate(at_nums):
+                row_r.append(str(round(bod_dict[scheme][idx1, idx2], 5)))
+            print(f"{at1}   " + " ".join(row_r))
+
