@@ -15,6 +15,7 @@ from pyscf.dft.numint import eval_ao, eval_rho
 from pyscf.dft.libxc import eval_xc, is_hybrid_xc, hybrid_coeff
 
 from pyAPOST.utils import out_summary
+from pyAPOST.bond_order import bod_dens
 
 @njit(nopython=True)
 def _coul_integral(id_p1, p1, rho1, rho2, atgrid_idx_b, a_grid_coords, b_grid_coords, wq, aim_w1, aim_w2, rij_v=1e-5):
@@ -40,7 +41,7 @@ def _coul_integral(id_p1, p1, rho1, rho2, atgrid_idx_b, a_grid_coords, b_grid_co
 
 # @njit(nopython=True, parallel=True)
 @njit(nopython=True)
-def _two_elect_integral(id_p1, p1, mo_grid1, mo_grid2, atgrid_idx_b, a_grid_coords, b_grid_coords, wq, aim_w1, aim_w2, rij_v=1e-10, occs=None):
+def _exchange_integral(id_p1, p1, mo_grid1, mo_grid2, atgrid_idx_b, a_grid_coords, b_grid_coords, wq, aim_w1, aim_w2, rij_v=1e-10, occs=None):
     """ WIP: Auxiliary function for parallel calculation of 2e integrals"""
     # print('inside _two_elect_integral')
     # Loop only for occupied orbitals
@@ -54,7 +55,7 @@ def _two_elect_integral(id_p1, p1, mo_grid1, mo_grid2, atgrid_idx_b, a_grid_coor
         for j in range(mo_grid2.shape[0]):
             # If occs included then 1/4
             # exch_dens += occs[i] * mo_grid1[i, p1] * mo_grid1[j, p1] * occs[j] * mo_grid2[j, atgrid_idx_b] * mo_grid2[i, atgrid_idx_b]
-            exch_dens += mo_grid1[i, p1] * mo_grid1[j, p1] * mo_grid2[j, atgrid_idx_b] * mo_grid2[i, atgrid_idx_b]
+            exch_dens += mo_grid1[i, p1] * mo_grid2[j, atgrid_idx_b]* mo_grid2[i, atgrid_idx_b] * mo_grid1[j, p1]
     # Compute rij between i point index (p1) and atom b atgrid points
     # rij = np.linalg.norm(a_grid_coords[id_p1, :] - b_grid_coords, axis=-1)
     rij = a_grid_coords[id_p1, :] - b_grid_coords
@@ -189,6 +190,7 @@ def kin_energy(at_nums, at_coords, mol, dm, grid_coords, wq, aim_w, atgrid_idx )
     # 1. Compute positive def kinetic
     # 2. Compute alpha part
 
+    # Todo: Did we mention to compute the kinetic in molecular?
     # Get the gradients.
     eval_d_ao = eval_ao(mol, grid_coords, deriv=1)
     # eval_d_ao = eval_ao(mol, grid_coords)
@@ -489,7 +491,7 @@ def ee_hf_energy_interatomic(at_nums, grid_coords1, grid_coords2, mo_grid1, mo_g
                     coul_mat[ia, ib] += integral_coul / 2
             if x:
                 print('CALL HF X')
-                results_x = pool_x.starmap_async(_two_elect_integral, segments_x).get()
+                results_x = pool_x.starmap_async(_exchange_integral, segments_x).get()
                 pool_x.close()
                 pool_x.join()
 
@@ -504,6 +506,9 @@ def ee_hf_energy_interatomic(at_nums, grid_coords1, grid_coords2, mo_grid1, mo_g
                     t_exch_mat[ib, ia] = t_exch_mat[ia, ib]
                 else:
                     t_exch_mat[ia, ib] += -integral_exch
+
+                # if occ is not None:
+                #     t_exch_mat = 0.25 * t_exch_mat
 
     print(f'DEBUG: TOTAL NUMBER OF POINTS WITH Rij < {rij_v} : {rij_small}')
     print('SUMMARY TWO ELECTRON NUMERICAL INTEGRATION')
@@ -706,36 +711,36 @@ def ee_dft_energy_interatomic(at_nums, xc_code, xc_type, eval_mo_grid1, eval_mo_
 
     return dft_pairwise, int_bod, bod_type
 
-def bod_dens(at_nums, eval_mo_grid, wq, aim_w, atgrid_idx, aim_w_all, eval_mo_grad_grid=None, spin=0):
-    """WIP: Returns the bond order density based on integration of A and B domains
-    of r1 and r2 indices of the third order density matrix for SD"""
-
-
-    print('DEV: BOD dens based on the 3RDM')
-    bod_d = np.zeros((len(at_nums), len(at_nums), eval_mo_grid.shape[1]))
-    if isinstance(eval_mo_grad_grid, np.ndarray):
-        grad_bod = np.zeros((len(at_nums), len(at_nums), 3, eval_mo_grad_grid.shape[2]))
-
-    for ia in range(len(at_nums)):
-        for ib in range(len(at_nums)):
-            sij_a = np.sum(eval_mo_grid[None, :] * aim_w_all[ia] * eval_mo_grid[:,None, :] * wq * aim_w, axis=-1)
-            sij_b = np.sum(eval_mo_grid[None, :] * aim_w_all[ib] * eval_mo_grid[:,None, :] * wq * aim_w, axis=-1)
-            dij = np.dot(sij_a, sij_b) + np.dot(sij_b, sij_a)
-            for i in range(eval_mo_grid.shape[0]):
-                for j in range(eval_mo_grid.shape[0]):
-                    if spin == 1:
-                        bod_d[ia, ib] += (eval_mo_grid[i] * dij[i,j] * eval_mo_grid[j])
-                        if isinstance(eval_mo_grad_grid, np.ndarray):
-                            grad_bod[ia, ib] += 2 * eval_mo_grad_grid[:, i, :] * dij[i, j] * eval_mo_grid[None, j, :]
-                    else:
-                        bod_d[ia, ib] += 2*(eval_mo_grid[i] * dij[i,j] * eval_mo_grid[j])
-                        if isinstance(eval_mo_grad_grid, np.ndarray):
-                            grad_bod[ia,ib] += 4*  eval_mo_grad_grid[:, i, :] * dij[i,j] * eval_mo_grid[None, j, :]
-
-    if isinstance(eval_mo_grad_grid, np.ndarray):
-        return bod_d, grad_bod
-    else:
-        return bod_d
+# def bod_dens(at_nums, eval_mo_grid, wq, aim_w, atgrid_idx, aim_w_all, eval_mo_grad_grid=None, spin=0):
+#     """WIP: Returns the bond order density based on integration of A and B domains
+#     of r1 and r2 indices of the third order density matrix for SD"""
+#
+#
+#     print('DEV: BOD dens based on the 3RDM')
+#     bod_d = np.zeros((len(at_nums), len(at_nums), eval_mo_grid.shape[1]))
+#     if isinstance(eval_mo_grad_grid, np.ndarray):
+#         grad_bod = np.zeros((len(at_nums), len(at_nums), 3, eval_mo_grad_grid.shape[2]))
+#
+#     for ia in range(len(at_nums)):
+#         for ib in range(len(at_nums)):
+#             sij_a = np.sum(eval_mo_grid[None, :] * aim_w_all[ia] * eval_mo_grid[:,None, :] * wq * aim_w, axis=-1)
+#             sij_b = np.sum(eval_mo_grid[None, :] * aim_w_all[ib] * eval_mo_grid[:,None, :] * wq * aim_w, axis=-1)
+#             dij = np.dot(sij_a, sij_b) + np.dot(sij_b, sij_a)
+#             for i in range(eval_mo_grid.shape[0]):
+#                 for j in range(eval_mo_grid.shape[0]):
+#                     if spin == 1:
+#                         bod_d[ia, ib] += (eval_mo_grid[i] * dij[i,j] * eval_mo_grid[j])
+#                         if isinstance(eval_mo_grad_grid, np.ndarray):
+#                             grad_bod[ia, ib] += 2 * eval_mo_grad_grid[:, i, :] * dij[i, j] * eval_mo_grid[None, j, :]
+#                     else:
+#                         bod_d[ia, ib] += 2*(eval_mo_grid[i] * dij[i,j] * eval_mo_grid[j])
+#                         if isinstance(eval_mo_grad_grid, np.ndarray):
+#                             grad_bod[ia,ib] += 4*  eval_mo_grad_grid[:, i, :] * dij[i,j] * eval_mo_grid[None, j, :]
+#
+#     if isinstance(eval_mo_grad_grid, np.ndarray):
+#         return bod_d, grad_bod
+#     else:
+#         return bod_d
 
 def iqa_interatomic(APOSTBase, ph2=0.162, rij_v=1e-5, ncpus=1, bod_type='bod', out=True):
     """WIP: Function to obtain two electron dependent energy quantities and
@@ -748,7 +753,6 @@ def iqa_interatomic(APOSTBase, ph2=0.162, rij_v=1e-5, ncpus=1, bod_type='bod', o
     mol_w = APOSTBase.part.aim_w
     atgrid_idx = APOSTBase.part.grid_to_atom_idx
 
-    # Density info. For now only SD
     thresh = 1e-8
     occ_coeff_a = APOSTBase.mo_coeff_a[:, APOSTBase.occ_a > thresh]
     occ_coeff_b = APOSTBase.mo_coeff_b[:, APOSTBase.occ_b > thresh]
@@ -783,7 +787,7 @@ def iqa_interatomic(APOSTBase, ph2=0.162, rij_v=1e-5, ncpus=1, bod_type='bod', o
     # we substract the atomic coordinates, and then rotate them again. After that we generate a second set of AIM weights for the rotated grid but keep the same
     # atomi(quadrature) weights.
     # Note: Grids are computed for total density not spin separated
-    grid_coords2, mol_w_2 = APOSTBase.part.rotate_grid(at_coords, at_nums, pha, phb, dm_a + dm_b)
+    grid_coords2, mol_w_2 = APOSTBase.part.rotate_grid(at_coords, at_nums, pha, phb, dm_a + dm_b, mol=APOSTBase._mol)
     print(f'DEV: ROTATED GRID AND AIM : {grid_coords2.shape}, {mol_w_2.shape}')
 
     xc_code, xc_type = APOSTBase.xc_code
