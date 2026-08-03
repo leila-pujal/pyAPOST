@@ -12,8 +12,10 @@ import logging
 
 from pyscf.dft.numint import eval_ao, eval_rho
 
-from pyAPOST.iqa_sd import _coul_integral, iqa_atomic
+# from pyAPOST.bond_order_wip1 import compute_bod
+from pyAPOST.iqa_sd import _coul_integral,_exchange_integral,  iqa_atomic, ee_hf_energy_interatomic
 from pyAPOST.utils import out_summary_phf
+from pyAPOST.bond_order import  improved_bod, compute_bod
 
 #Note:
 # Some of the functions, specially the ones dealing with ee integrals have significant amount of arguments
@@ -22,7 +24,7 @@ from pyAPOST.utils import out_summary_phf
 
 @njit(nopython=True)
 # def _two_elect_integral_phf(id_p1, p1, dm1, mo_ovlp_alt1, mo_ovlp_alt2, a_grid_coords, grid_coords2, qw, aim_w1, aim_w2, rij_v=1e-5):
-def _two_elect_integral_phf(id_p1, p1, mo_ovlp_alt1, mo_ovlp_alt2, atgrid_idx_b, a_grid_coords,b_grid_coords, qw, aim_w1, aim_w2, occ, rij_v=1e-5):
+def _two_elect_integral_phf(id_p1, p1, mo_ovlp_alt1, mo_ovlp_alt2, atgrid_idx_b, a_grid_coords,b_grid_coords, wq, aim_w1, aim_w2, occ, rij_v=1e-5):
 
     """ WIP: Auxiliary function for parallel calculation of 2e integrals from monadic diagonalized cumulant"""
 
@@ -35,13 +37,13 @@ def _two_elect_integral_phf(id_p1, p1, mo_ovlp_alt1, mo_ovlp_alt2, atgrid_idx_b,
         ee += occ[i]* mo_ovlp_alt1[i, p1] * mo_ovlp_alt2[i, atgrid_idx_b ]
     ee = ee / rij
     ee[rij < 1e-9] = 0
-    ee_t1 = np.sum(ee * qw[atgrid_idx_b] * aim_w2[atgrid_idx_b])
-    ee_t = ee_t1 * qw[p1] * aim_w1[p1]
+    ee_t1 = np.sum(ee * wq[atgrid_idx_b] * aim_w2[atgrid_idx_b])
+    ee_t = ee_t1 * wq[p1] * aim_w1[p1]
 
     return ee_t, rij[rij<rij_v].shape[0]
 
 
-def ee_terms_phf(at_nums, norb, dm1, dm2, grid_coords1, grid_coords2, mo_grid1, mo_grid2, qw, aim_w1, aim_w2, atgrid_idx, cumul='xc', rij_v=1e-5, ncpus=1):
+def ee_terms_phf(at_nums, norb, dm1, dm2, grid_coords1, grid_coords2, mo_grid1, mo_grid2, wq, aim_w1, aim_w2, atgrid_idx, cumul='xc', rij_v=1e-5, ncpus=1, u12=None, allw=None):
     """WIP: This is a dev function to test decomposing electron-electron repulsion energy from post-hartree fock method into
     coulomb, exchange and correlation(cumulant).
     """
@@ -49,6 +51,18 @@ def ee_terms_phf(at_nums, norb, dm1, dm2, grid_coords1, grid_coords2, mo_grid1, 
     print('DEV ee_terms_phf')
     start = time.time()
     cumulant_mat = np.zeros((len(at_nums), len(at_nums)))
+
+    if u12 is not None:
+        print('u12')
+        print(type(u12))
+        print(u12.shape)
+        u12[u12 == -0.0] = 0
+        u12[(u12 < -1e-45) & (u12 > -1e-5)] = 0
+        print(u12)
+        # assert 5 == 6
+        ovlp_a = np.sum(mo_grid1[None, :norb] * allw * mo_grid1[ :norb, None, :] * wq * aim_w1, axis=-1)
+        print(np.trace(u12))
+        print('Check u', np.trace(np.dot(u12, ovlp_a)))
 
     # Now we compute the cumulant. for this we build spdm1 and psdm1
     # norb = total orbitals CAS
@@ -61,12 +75,13 @@ def ee_terms_phf(at_nums, norb, dm1, dm2, grid_coords1, grid_coords2, mo_grid1, 
             sfdm1[i,j] = dm1[i*2, j*2] + dm1[i*2+1, j*2+1]
             psdm1[i,j] = dm1[i*2, j*2] - dm1[i*2+1, j*2+1]
             # print(dm1[i*2, j*2], dm1[i*2+1, j*2+1], sfdm1[i,j])
-    # print('sfdm1', sfdm1)
-    # print('psdm1', psdm1)
+    # assert 5 == 6
     #COMPUTE ALL CUMULANTS
     xc_cumul = np.zeros((norb, norb, norb, norb))
     x_cumul = np.zeros((norb, norb, norb, norb))
+    gx_cumul = np.zeros((norb, norb, norb, norb))
     c_cumul = np.zeros((norb, norb, norb, norb))
+    c_gx_cumul = np.zeros((norb, norb, norb, norb))
     print(dm2.shape)
     for i in range(norb):
         for j in range(norb):
@@ -77,19 +92,31 @@ def ee_terms_phf(at_nums, norb, dm1, dm2, grid_coords1, grid_coords2, mo_grid1, 
                     coult =sfdm1[i,j] * sfdm1[k,l]
                     x1 = (sfdm1[i,k] * sfdm1[j,l])/2
                     x2 = (psdm1[i,k] * psdm1[j,l])/2
+                    # x_unp = (u12[i,k] * u12[j,l])/2
+                    # print('dev u12', u12[i,k], u12[j,l], u12[i,k] * u12[j,l])
+                    x_unp = (np.sqrt(u12[i,k]) * np.sqrt(u12[j,l]))/2
                     xc_cumul[i,j,k,l] = dm2[i,j,k,l] - coult
                     c_cumul[i,j,k,l] = dm2[i,j,k,l] - coult + x1 + x2
                     x_cumul[i,j,k,l] = - x1 - x2
+                    gx_cumul[i,j,k,l] = -x1 - x_unp
+                    c_gx_cumul[i, j, k, l] = dm2[i, j, k, l] - coult + x1 + x_unp
+                    # x_cumul[i,j,k,l] = - x2
                     # print('ijkl xc coult', i, j, k, l, xc_cumul[i,j,k,l], dm2[i,j,k,l], coult)
                     # print(i,j,k,l, coult, sfdm1[i,j], sfdm1[k,l])
 
     if cumul == 'xc':
         eigval_cumul, eigvec_cumul = _monadic_diag(xc_cumul)
-    elif cumul == 'c':
+    if cumul == 'c':
         eigval_cumul, eigvec_cumul = _monadic_diag(c_cumul)
-    elif cumul == 'x':
+    if cumul == 'c_gx':
+        print('c_gx')
+        eigval_cumul, eigvec_cumul = _monadic_diag(c_gx_cumul)
+    if cumul == 'x':
         eigval_cumul, eigvec_cumul = _monadic_diag(x_cumul)
-    elif cumul == 'dm2':
+    if cumul == 'gx':
+        print('gx')
+        eigval_cumul, eigvec_cumul = _monadic_diag(gx_cumul)
+    if cumul == 'dm2':
         eigval_cumul, eigvec_cumul = _monadic_diag(dm2)
 
     # After diagonalizing the condensed cumulant we obtained the transformation from indices of MO pairs to Natural pairs
@@ -127,7 +154,7 @@ def ee_terms_phf(at_nums, norb, dm1, dm2, grid_coords1, grid_coords2, mo_grid1, 
             pool = mp.Pool(processes=ncpus)
             segments = []
             for id_p1, p1 in enumerate(atgrid_idx_a): # atgrid_idx_a index inside molecular grid from a
-                segments.append((id_p1, p1, nat_pairs_mo1, nat_pairs_mo2, atgrid_idx_b, a_grid_coords, b_grid_coords, qw, aim_w1, aim_w2, eigval_cumul, 1e-5))
+                segments.append((id_p1, p1, nat_pairs_mo1, nat_pairs_mo2, atgrid_idx_b, a_grid_coords, b_grid_coords, wq, aim_w1, aim_w2, eigval_cumul, 1e-5))
 
 
             results = pool.starmap_async(_two_elect_integral_phf, segments).get()
@@ -257,14 +284,13 @@ def _monadic_diag(cumul):
 #Note: For now only restricted CASSCF because the code is using the spinless dm2 but should be straightforward to extend to unrestricted
 
 
-def iqa_phf(APOSTBase, ph2=0.162, rij_v=1e-5, correlation=False, ncpus=1):
+def iqa_phf(APOSTBase, ph2=0.162, rij_v=1e-5, correlation='classic', ncpus=1):
     """ WIP: Call function to obtain full decomposition into atomic/interatomic terms from a CAS calc"""
 
     # Gather information from molecule and integration grid
     at_coords = APOSTBase.at_coords
     at_nums = np.array(APOSTBase.at_nums)
     # Grid info
-    # Todo: Change the name to wp
     wq = APOSTBase.part.quadrature_weights
     mol_w = APOSTBase.part.aim_w
     atgrid_idx = APOSTBase.part.grid_to_atom_idx
@@ -309,7 +335,7 @@ def iqa_phf(APOSTBase, ph2=0.162, rij_v=1e-5, correlation=False, ncpus=1):
     # we substract the atomic coordinates, and then rotate them again. After that we generate a second set of AIM weights for the rotated grid but keep the same
     # atomi(quadrature) weights.
     # Note: Grids are computed for total density not spin separated
-    grid_coords2, mol_w_2 = APOSTBase.part.rotate_grid(at_coords, at_nums, pha, phb, dm_a + dm_b)
+    grid_coords2, mol_w_2 = APOSTBase.part.rotate_grid(at_coords, at_nums, pha, phb, dm_a + dm_b, mol=APOSTBase._mol)
     print(f'DEV: ROTATED GRID AND AIM : {grid_coords2.shape}, {mol_w_2.shape}')
 
     eval_ao_grid1 = eval_ao(APOSTBase._mol,grid_coords1, deriv=0)
@@ -353,21 +379,24 @@ def iqa_phf(APOSTBase, ph2=0.162, rij_v=1e-5, correlation=False, ncpus=1):
     iqa_phf['at_coul']= coul_phf(at_nums, grid_coords1, grid_coords2, rho1 , rho2, wq, mol_w, mol_w_2, atgrid_idx, rij_v=rij_v, ncpus=ncpus)
     iqa_phf['t_coul'] = np.sum(np.triu(iqa_phf['at_coul']))
 
-    # Compute XC cumulant
-    # Suggestion: I could pass the grid integration values as a dict?
-    # Always compute XC cumulant
-    iqa_phf['at_xc'] = ee_terms_phf(at_nums, norb, dm1,  dm2, grid_coords1, grid_coords2, eval_mo_grid1, eval_mo_grid2, wq, mol_w, mol_w_2, atgrid_idx, cumul='xc',  rij_v=rij_v, ncpus=ncpus)
-    iqa_phf['t_xc'] = np.sum(np.triu(iqa_phf['at_xc']))
-
-    if correlation:
-        iqa_phf['at_x'] = ee_terms_phf(at_nums, norb, dm1,  dm2, grid_coords1, grid_coords2, eval_mo_grid1, eval_mo_grid2, wq, mol_w, mol_w_2, atgrid_idx, cumul='x',  rij_v=rij_v, ncpus=ncpus)
-        iqa_phf['at_c'] = ee_terms_phf(at_nums, norb, dm1,  dm2, grid_coords1, grid_coords2, eval_mo_grid1, eval_mo_grid2, wq, mol_w, mol_w_2, atgrid_idx, cumul='c',  rij_v=rij_v, ncpus=ncpus)
+    if correlation == 'generalized':
+        # iqa_phf['at_x'] = ee_terms_phf(at_nums, norb, dm1,  dm2, grid_coords1, grid_coords2, eval_mo_grid1, eval_mo_grid2, wq, mol_w, mol_w_2, atgrid_idx, cumul='x',  rij_v=rij_v, ncpus=ncpus, u12=u12, allw=APOSTBase.part.aim_w_allp[0])
+        # iqa_phf['at_c'] = ee_terms_phf(at_nums, norb, dm1,  dm2, grid_coords1, grid_coords2, eval_mo_grid1, eval_mo_grid2, wq, mol_w, mol_w_2, atgrid_idx, cumul='c',  rij_v=rij_v, ncpus=ncpus, u12=u12, allw=APOSTBase.part.aim_w_allp[0])
+        iqa_phf['at_x'] = ee_terms_phf(at_nums, norb, dm1, dm2, grid_coords1, grid_coords2, eval_mo_grid1, eval_mo_grid2, wq, mol_w, mol_w_2, atgrid_idx,cumul='gx', rij_v=rij_v, ncpus=ncpus, u12=u12, allw=APOSTBase.part.aim_w_allp[0])
+        iqa_phf['at_c'] = ee_terms_phf(at_nums, norb, dm1, dm2, grid_coords1, grid_coords2, eval_mo_grid1, eval_mo_grid2, wq, mol_w, mol_w_2, atgrid_idx,cumul='c_gx', rij_v=rij_v, ncpus=ncpus, u12=u12, allw=APOSTBase.part.aim_w_allp[0])
+        iqa_phf['t_x'] = np.sum(np.triu(iqa_phf['at_x']))
+        iqa_phf['t_c'] = np.sum(np.triu(iqa_phf['at_c']))
+    if correlation == 'classic':
+        iqa_phf['at_x'] = ee_terms_phf(at_nums, norb, dm1,  dm2, grid_coords1, grid_coords2, eval_mo_grid1, eval_mo_grid2, wq, mol_w, mol_w_2, atgrid_idx, cumul='x',  rij_v=rij_v, ncpus=ncpus, u12=u12, allw=APOSTBase.part.aim_w_allp[0])
+        iqa_phf['at_c'] = ee_terms_phf(at_nums, norb, dm1,  dm2, grid_coords1, grid_coords2, eval_mo_grid1, eval_mo_grid2, wq, mol_w, mol_w_2, atgrid_idx, cumul='c',  rij_v=rij_v, ncpus=ncpus, u12=u12, allw=APOSTBase.part.aim_w_allp[0])
+        # iqa_phf['at_x'] = ee_terms_phf(at_nums, norb, dm1, dm2, grid_coords1, grid_coords2, eval_mo_grid1, eval_mo_grid2, wq, mol_w, mol_w_2, atgrid_idx,cumul='gx', rij_v=rij_v, ncpus=ncpus, u12=u12, allw=APOSTBase.part.aim_w_allp[0])
+        # iqa_phf['at_c'] = ee_terms_phf(at_nums, norb, dm1, dm2, grid_coords1, grid_coords2, eval_mo_grid1, eval_mo_grid2, wq, mol_w, mol_w_2, atgrid_idx,cumul='c_gx', rij_v=rij_v, ncpus=ncpus, u12=u12, allw=APOSTBase.part.aim_w_allp[0])
         iqa_phf['t_x'] = np.sum(np.triu(iqa_phf['at_x']))
         iqa_phf['t_c'] = np.sum(np.triu(iqa_phf['at_c']))
 
 
 
-    out_summary_phf([iqa_phf], at_nums, APOSTBase.energy, correlation=correlation)
+    out_summary_phf([iqa_phf], at_nums, APOSTBase.energy, correlation=True)
 
     return iqa_phf
 
