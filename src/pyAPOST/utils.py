@@ -1,6 +1,7 @@
 import numpy as np
 
 import logging
+import copy as copy
 
 from pyscf.dft.numint import eval_ao, eval_rho
 
@@ -443,22 +444,52 @@ def out_summary_phf(iqa_data, at_nums, total_energy, correlation=False):
                 #     pass
                 # else:
                     total_sum_energy += iqa_data[0][k]
-
+        print('NN energy', iqa_data[0]['t_nn'])
         print('TOTAL ENERGY (SUM OF COMPONENTS):', total_sum_energy)
         print('TOTAL ENERGY (PySCF):', total_energy)
         print('DIFF (AU) :', total_sum_energy - total_energy)
         print('DIFF (Kcal) :', (total_sum_energy - total_energy) / 0.0015936014376406278)
         #############################
+        return total_sum_energy
+
+def out_ee_terms_analyt(ee_terms, t_energy, nn_energy):
+    logging.info('EE terms from analytic integrals')
+    labels = {'kin': "Kinetic energy", 'en':'Electron-Nucleus attraction energy',
+               'coul':'Coulomb energy',  'x_a': 'Exchange energy alpha electrons',
+              'x_b': 'Exchange energy beta electrons', 'ee': 'Total Electron-Electron repulsion energy',
+              'u12': 'Spin density represented as the density of Unpaired electrons',
+              'old_x': 'Exchange energy (Alpha and beta exchange)',
+              'new_x': 'Exchange energy (Alpha + beta + u^1/2 exchange)',
+              'old_c': 'Correlation energy (from subtracting Exchange and Coulomb to the EE energy)',
+              'new_c': 'Correlation energy (from subtracting Exchange,Coulomb, and U^1/2 to the EE energy)'}
+
+    for term in ee_terms.keys():
+        if term in ['u12_ps', 'old_x', 'new_x', 'old_c', 'new_c', 'total_terms', 'total_pyscf'  ]:
+            pass
+        else:
+            print(f'{labels[term]}')
+            print(f'{ee_terms[term]: .5f}')
+    if all([i in list(ee_terms.keys()) for i in ["kin", "en", "coul", "x_a", "x_b", "ee"]]):
+        print('calculated', ee_terms['ee'] + ee_terms['kin'] + ee_terms['en'] + nn_energy)
+        print('Pyscf enregy', t_energy)
+    if 'new_x' in ee_terms.keys():
+        print('\n')
+        print('DEV: Printing new and old definitions of Exchange and correlation')
+        for term in ee_terms.keys():
+            if term in ['u12', 'old_x', 'new_x', 'old_c', 'new_c']:
+                print(f'{labels[term]}')
+                print(f'{ee_terms[term]: .5f}')
 
 
-def out_bod(at_nums, bod_dict):
+def out_bo(at_nums, bo_dict):
     """Printing BOD results"""
 
-    for scheme in bod_dict.keys():
+    for scheme in bo_dict.keys():
+        logging.info('Summary Bond Order')
         print(f'BOND ORDER: {scheme}')
         for idx1, at1 in enumerate(at_nums):
             row_r = []
             for idx2, at2 in enumerate(at_nums):
-                row_r.append(str(round(bod_dict[scheme][idx1, idx2], 5)))
+                row_r.append(str(round(bo_dict[scheme][idx1, idx2], 5)))
             print(f"{at1}   " + " ".join(row_r))
 
