@@ -4,7 +4,7 @@ import scipy as scipy
 # from scipy.spatial.transform import Rotation as R
 import copy as copy
 # Imports Hilbert
-from pyscf import mcscf
+from pyscf import mcscf, fci
 from pyscf import lo
 
 # Imports Real
@@ -37,14 +37,15 @@ class APOSTBase(object):
     mol: object of class Mole from PySCF
     calc: object of method calculation from PySCF
     part_name: (str) Partition name. Includes: Lowdin, Meta-Lowdin, Nao, Becke, TFVC
+    scf_calc: (WIP) fci solver does not store the scf calculation used to initialize the FCI calc
     frags: (list, numpy array or set types): list, array or set including and iterable for each fragment specified
     """
 
-    def __init__(self, mol, calc, part_name=None, frags=None, rpart_specs=None):
+    def __init__(self, mol, calc, part_name=None, frags=None, rpart_specs=None, scf_calc=None):
 
         #DEV:saving mol
-        APOSTBase._mol = mol
-        APOSTBase._calc = calc
+        self._mol = mol
+        self._calc = calc
 
         # Check passed variables for mol and calc
         if not isinstance(mol, Mole):
@@ -52,7 +53,8 @@ class APOSTBase(object):
 
         self._kind_calc = str(type(calc))
         if not any([i in self._kind_calc for i in ["RHF", "RKS", "UHF", "UKS", "KS", "ROKS", "ROHF", "CASSCF","CASCI", "CCSD", "UCCSD"]]):
-            raise TypeError(f'Calc object should correspond to a PySCF calculation. Got {self._kind_calc}')
+            if not isinstance(calc, np.lib.npyio.NpzFile):
+                raise TypeError(f'Calc object should correspond to a PySCF calculation. Got {self._kind_calc}')
 
         # Check that types for part_name, frag and rpart_specs
         if part_name is not None and not isinstance(part_name, str):
@@ -78,11 +80,11 @@ class APOSTBase(object):
         self._at_nums = [mol.atom_nelec_core(ia) + mol.atom_charge(ia) for ia in range(mol.natm)]
         self._alpha_elec = mol.nelec[0]
         self._beta_elec = mol.nelec[1]
-        if isinstance(calc, dict):
+        if isinstance(calc, np.lib.npyio.NpzFile):
             self._e_tot = calc['e_tot']
         else:
             self._e_tot = calc.e_tot
-        #
+
         # Basis set information
         self._nbasis = mol.nbas # Number of shells
         # self._basis_exp = None
@@ -96,6 +98,7 @@ class APOSTBase(object):
         self._shell_to_atom = None
         self._shell_to_basis= None
         self._ovlp = mol.intor_symmetric('int1e_ovlp')
+        self._smo = None
 
 
 
@@ -109,6 +112,7 @@ class APOSTBase(object):
         self._dft = False
         self._cas = False
         self._ccsd = False
+        self._fci = False
         self._xc_code = (None, None)
 
 
@@ -165,6 +169,164 @@ class APOSTBase(object):
                 print('ALPHA/BETA', self._occ_a)
                 print('TOTAL', np.sum(self._occ_a))
 
+        elif "FCI" in self._kind_calc or isinstance(calc, np.lib.npyio.NpzFile):
+            self._fci = True
+            if scf_calc is not None:
+                if "ROHF" in str(type(scf_calc)):
+                    self._unrestr = True
+                    # self._dm_a, self._dm_b = mcscf.addons.make_rdm1s(calc)
+                    self._mo_coeff_a = scf_calc.mo_coeff[0]
+                    self._mo_coeff_b = scf_calc.mo_coeff[1]
+                else:
+                    # self._dm_a = mcscf.addons.make_rdm1(calc)
+                    # self._dm_b = self._dm_a
+                    self._mo_coeff_a = scf_calc.mo_coeff
+                    self._mo_coeff_b = scf_calc.mo_coeff
+            else:
+                raise TypeError(f"Initializing with a FCI calculation but without a scf_calc. Got {scf_calc}")
+
+            if isinstance(calc, np.lib.npyio.NpzFile):
+                # casdm1s=fci.FCI.make_rdm1s(calc['ci'], calc['norb'], (calc['nelec'][0], calc['nelec'][1]))
+                casdm1s= calc['dm1_s']
+                dm1_pyscf=calc['dm1']
+            else:
+                casdm1s=calc.make_rdm1s(calc.ci, calc.norb, (calc.nelec[0], calc.nelec[1]))
+                dm1_pyscf=calc.make_rdm1(calc.ci, calc.norb, (calc.nelec[0], calc.nelec[1]))
+            print(casdm1s[0].shape)
+
+            # For IQA-PHF we only need norb after saving the DMs.
+            # Keeping it for now (as protected attribute of the class) to see if we needed for the spin
+            if isinstance(calc,np.lib.npyio.NpzFile):
+                self._fci_data = {}
+                self._fci_data['nelec'] = calc['nelec']  # total cas electrons tuple(alpha,beta) now only taking alpha because restricted
+                self._fci_data['norb'] = calc['norb']  # Number orbitals
+                self._fci_data['ci'] = calc['ci']  # e FCI coefficients (From pyscf doc CASBase class)
+            else:
+                self._fci_data = {}
+                self._fci_data['nelec'] = calc.nelec  # total cas electrons tuple(alpha,beta) now only taking alpha because restricted
+                self._fci_data['norb'] = calc.norb  # Number orbitals
+                self._fci_data['ci'] = calc.ci  # e FCI coefficients (From pyscf doc CASBase class)
+
+            # Reconstructing dm1 as in APOST. Could be potentially refactored in the future
+            # dm1 --> spinorb, spinorb
+            # spinorb: (number of cas orbitals + core orbitals) * 2 because spin
+            norb = self._fci_data['norb']
+            spinorb = norb * 2
+            print('LOADING MULTIREFERENCE METHOD DATA')
+            logger.info(f'  Post-Hartree Fock CAS : FCI' )
+            print('Number of total orbitals HF:', scf_calc.mo_occ[scf_calc.mo_occ > 0].shape[0])
+            print('Occupations orbitals HF:', scf_calc.mo_occ[scf_calc.mo_occ > 0])
+            print('Number of total orbitals CAS:', norb)
+            # Note: nelec only works for unrestricted
+            # print('Number of total electrons :', calc._scf.nelec, calc._scf.mo_occ.sum())
+            # print('Number of core orbitals :', self._cas_data['ncore'])
+            # print('Number of active space orbitals :', self._cas_data['ncas'])
+            # print('Number of active space electrons : ', self._cas_data['nelecas'])
+
+            dm1 = np.zeros((spinorb, spinorb))
+            dm1_a = casdm1s[0]
+            dm1_b = casdm1s[1]
+
+            for i in range(spinorb):
+                for j in range(spinorb):
+                    if i== 0 and j==0:
+                        dm1[i, j] = casdm1s[0][i, j]
+                    elif i==0 and j%2 == 0:
+                        j_a = int(j/2)
+                        dm1[i,j] = casdm1s[0][i, j_a]
+                    elif i%2 == 0 and j%2 == 0:
+                        i_a = int(i / 2)
+                        j_a = int(j / 2)
+                        dm1[i,j] = casdm1s[0][i_a, j_a]
+                    elif i%2 == 1 and j%2 == 1:
+                        i_b = int((i+1)/2)-1
+                        j_b = int((j+1)/2)-1
+                        dm1[i,j] = casdm1s[1][i_b, j_b]
+
+            # Test idempotency
+            print('TEST idempotency', np.sum(np.dot(dm1,dm1) - dm1))
+            print()
+            print('TRACE DM1', np.trace(dm1))
+            print('TRACE DM1 alpha', np.trace(dm1_a))
+            print('TRACE DM1 beta',  np.trace(dm1_b))
+            print('TRACE DM1 SPINLESS', np.trace(dm1_pyscf))
+
+            # diagonalizing Dij
+            occ_no, coeff_no = np.linalg.eigh(dm1_pyscf)
+            coeff_no = np.flip(coeff_no, axis=1)
+            occ_no = occ_no[::-1]  # Same as flip
+            print('Natural orbitals from diagonalization of Dij')
+            print('Natural orbital occupations (> 1e-8)')
+            print('dm1 diagonalization')
+            print('   ' + ' '.join([str(round(o, 4)) for o in occ_no if o > 1e-8]))
+
+            # get density from NOs as a linear combination of MO
+            # coeff_no: array(MO,NO)
+            # coeff: array(AO, MO)
+            # i:NO, k:MO, b:AO
+            coeff_no_ao_basis = np.einsum('bk,ki ->bi', scf_calc.mo_coeff[:, occ_no > 1e-8],  coeff_no[occ_no > 1e-8, :])
+            d = 0
+            dm_no = np.dot(coeff_no_ao_basis * occ_no, coeff_no_ao_basis.T)
+            for mu in range(coeff_no_ao_basis.shape[0]):
+                for nu in range(coeff_no_ao_basis.shape[0]):
+                    d += dm_no[mu, nu] * self._ovlp[nu, mu]
+            print('CHECK: Density from Natural orbitals in AO basis: ', d)
+
+            # Now saving dm2
+            if isinstance(calc, np.lib.npyio.NpzFile):
+                dm2 = calc['dm2']
+            else:
+                dm2 =calc.make_rdm2(calc.ci, calc.norb, calc.nelec)
+            # For FCI we shouldn't have to do nothing because everything is active space
+
+            # Check trace
+            # inactive orbitals
+            t3 = 0
+            for i in range(norb):
+                for j in range(norb):
+                    t3 += dm2[i, i, j, j]
+            print('TOTAL TRACE', t3)
+
+            # Saving DM1s and DM2
+            self._dm1 = dm1  # spinorbitals
+            self._dm1_a = dm1_a
+            self._dm1_b = dm1_b
+            self._dm2 = dm2
+            # Todo: decide if to keep
+            self._dij = dm1_pyscf  # spinless
+
+            # For now only protected variables of the class because we are not sure if we will use all of them consistently
+            # through the code
+            self._occ_no = occ_no
+            self._coeff_no = coeff_no
+            self._fci_mo_coeff = scf_calc.mo_coeff
+            print(self._fci_mo_coeff.shape)
+
+            # Transforming to dm1_a and dm1_b to AOs basis
+            dm_a = np.einsum('ai, ij, jb -> ab', scf_calc.mo_coeff, dm1_a, scf_calc.mo_coeff.T)
+            dm_b = np.einsum('ai, ij, jb -> ab', scf_calc.mo_coeff, dm1_b, scf_calc.mo_coeff.T)
+            print('CHECK TRANSFORM DM1_a (MOs) -> dm_a (AOs)', np.trace(np.dot(dm_a, self._ovlp)))
+            print('CHECK TRANSFORM DM1_b (MOs) -> dm_b (AOs)', np.trace(np.dot(dm_b, self._ovlp)))
+            self._dm_a = dm_a + dm_b
+            print(self._dm_a)
+
+            # obtaining natural a and b occupations
+            # Warning: Even tough we save it as occ_a and coeff_a this come from natural orbitals a and b
+            # not from the scf calculation
+            if any([i in str(type(scf_calc)) for i in ["ROHF", "RHF", "RKS","KS"]]):
+                self._dm_a = dm_a + dm_b
+                self._dm_b = dm_b + dm_a
+                occ_a, coeff_a = np.linalg.eigh(dm1_a)
+                self._coeff_a = np.flip(coeff_a, axis=1)
+                occ_a = occ_a[::-1]  # Same as flip
+                occ_b, coeff_b = np.linalg.eigh(dm1_b)
+                self._coeff_b = np.flip(coeff_b, axis=1)
+                occ_b = occ_b[::-1]  # Same as flip
+                print(occ_a)
+                self._occ_a = occ_a + occ_b
+                self._occ_b = occ_a + occ_b
+                print(self._occ_a)
+
         elif ("CASSCF" in self._kind_calc) or ("CASCI" in self._kind_calc):
             self._cas = True
             # We need this to compute one electron terms correctly
@@ -216,7 +378,7 @@ class APOSTBase(object):
             spinorb = (self._cas_data['ncas'] + self._cas_data['ncore']) *2
             norb = int(spinorb/2)
             print('LOADING MULTIREFERENCE METHOD DATA')
-            logger.info(f'  Post-Hartree Fock CAS :', )
+            logger.info(f'  Post-Hartree Fock CAS : CASSCF/CASSCI' )
             print('Number of total orbitals HF:', calc._scf.mo_occ[calc._scf.mo_occ > 0].shape[0])
             print('Occupations orbitals HF:', calc._scf.mo_occ[calc._scf.mo_occ > 0])
             print('Number of total orbitals CAS:', norb)
@@ -267,12 +429,22 @@ class APOSTBase(object):
             # Test idempotency
             print('TEST idempotency', np.sum(np.dot(dm1,dm1) - dm1))
             print()
+            print(np.einsum('ij ->', dm1))
+            print(np.trace(dm1))
+            print(np.einsum('ij ->', dm1_a))
+            print(np.einsum('ij ->', dm1_b))
+
+            print(np.trace(dm1))
+            print(np.einsum('ij->', dm1))
+            print(np.linalg.norm(dm1 - np.diag(np.diag(dm1))))
 
             # print('Building D_ij')
             print('Building Spinless 1-RDM (DM1)')
-            dij = np.zeros(calc.mo_coeff.shape) # dim: basis functions, basis functions
-            dij_a = np.zeros(calc.mo_coeff.shape)
-            dij_b = np.zeros(calc.mo_coeff.shape)
+            # dij = np.zeros(calc.mo_coeff.shape) # dim: basis functions, basis functions
+            dij = np.zeros((norb, norb)) # dim: basis functions, basis functions
+            # todo: to check if we are repating building dij_a/dij_b
+            dij_a = np.zeros((norb, norb))
+            dij_b = np.zeros((norb, norb))
             for i in range(0, int(spinorb/2)):
                 for j in range(0, int(spinorb/2)):
                     dij[i, j] = dm1[i*2, j*2] + dm1[i*2+1, j*2+1]
@@ -280,11 +452,6 @@ class APOSTBase(object):
                     dij_b[i, j] = dm1[i*2+1, j*2+1]
 
             # diagonalizing Dij
-            # Note: By diagonalizing the DM1 (Dij) we obtain the same eigenvalues/eigenvectors obtained
-            # earlier up to some threshold. The diagonalization of DM1 in AO basis adds spurious very small
-            # negative values (order 10^-14) as eigenvalues. This also makes the coefficients slightly different
-            # if we included them in the diagonal of DM1 and diagonalize then we recover the same coefficients.
-            # occ_no, coeff_no = scipy.linalg.eigh(dij)
             occ_no, coeff_no = np.linalg.eigh(dij)
             coeff_no = np.flip(coeff_no, axis=1)
             occ_no = occ_no[::-1] # Same as flip
@@ -299,7 +466,11 @@ class APOSTBase(object):
             # coeff_no: array(MO,NO)
             # coeff: array(AO, MO)
             # i:NO, k:MO, b:AO
-            coeff_no_ao_basis = np.einsum('bk,ki ->bi', calc.mo_coeff[:, occ_no>1e-8], coeff_no[occ_no>1e-8,:])
+            # WARNING: To only deal with occupied NO orbitals dimensions of dij -> Norb, Norb. When we want to transform
+            # the Mo coeff into No_coeff we need to restric the Molecular orbitals to norb too. This is to avoid
+            # slicing the dij every time with norb, norb. Test that this is okay to do.
+            # coeff_no_ao_basis = np.einsum('bk,ki ->bi', calc.mo_coeff[:, :occ_no>1e-8], coeff_no[occ_no>1e-8,:])
+            coeff_no_ao_basis = np.einsum('bk,ki ->bi', calc.mo_coeff[:, :occ_no.shape[0]], coeff_no[:, :occ_no.shape[0]])
             d = 0
             dm_no = np.dot(coeff_no_ao_basis*occ_no, coeff_no_ao_basis.T)
             for mu in range(coeff_no_ao_basis.shape[0]):
@@ -443,6 +614,8 @@ class APOSTBase(object):
                 logger.info(f'  Post-Hartree Fock CCSD' )
             elif self._cas:
                 logger.info(f'  Post-Hartree Fock CAS')
+            elif self._fci:
+                logger.info(f'  Post-Hartree Fock FCI')
         logger.info(f'  Unrestricted : {self._unrestr}')
         logger.info(f'  DFT : {self._dft}\n')
 
@@ -460,8 +633,11 @@ class APOSTBase(object):
                 if not isinstance(rpart_specs, dict):
                     raise TypeError(" rpart_specs must be a dict")
             self._part = Rpart(part_name, mol, dm, self._at_nums, frags=frags, grid_specs=rpart_specs)
-        else:
+        elif isinstance(part_name, str):
             raise ValueError("Could not identify partition. Choose from: Mulliken,Lowdin,Meta-Lowdin,NAO")
+        else:
+            logger.info('No partition. Only calculation of global values available')
+            self._part = None
 
     @property
     def natm(self):
@@ -543,7 +719,7 @@ class APOSTBase(object):
 
     @property
     def dm1(self):
-        if not self._cas or self._ccsd:
+        if not (self._cas or self._ccsd or self._fci):
             raise TypeError('DM1 not saved for SD methods')
         elif self._ccsd:
             raise NotImplementedError
@@ -552,7 +728,7 @@ class APOSTBase(object):
 
     @property
     def dm2(self):
-        if not self._cas or self._ccsd:
+        if not (self._cas or self._ccsd or self._fci):
             raise TypeError('DM2 not saved for SD methods')
         elif self._ccsd:
             raise NotImplementedError
@@ -570,15 +746,16 @@ class APOSTBase(object):
     def occ(self):
         raise NotImplementedError
 
+    @property
+    def smo(self):
+        if self._smo is None:
+            self._smo = self.generate_smo()
+        return self._smo
+
+
     def generate_mo_coeff(self, dm, overlap=None):
         """Method to obtain molecular orbital coefficients from Dm. Optional overlap"""
-        # Todo: investigate about how we should do it if we wanted to update the internal attribute of the APOSTBase object
-        # 2 options: 1) Don't update and just return the occ/coeff. 2) Allow for an option to update the attribute. For this we need to know the good practices
-        # about updating attributes.
 
-        # Right now code specific for dm:One-electron density matrix and overlap
-
-        # check dm
         if not (isinstance(dm, np.ndarray) and dm.ndim == 2 and dm.dtype == float):
             raise TypeError("One-electron density matrix must be a 2D-array float `dtype`")
         if dm.shape[0] != dm.shape[1]:
@@ -604,6 +781,111 @@ class APOSTBase(object):
             # Check with original code APOSTpy: Yes
             occ_n, coeff_n = np.flip(occ_n), np.flip(coeff_n, axis=1)
             return occ_n, coeff_n
+
+
+    def generate_smo(self):
+        """WIP: Generate overlap matrices for molecular orbitals"""
+
+        # at_coords = APOSTBase.at_coords
+        # at_nums = np.array(APOSTBase.at_nums)
+        # Grid info
+        if self.part:
+            wq = self.part.quadrature_weights
+            mol_w = self.part.aim_w
+            # atgrid_idx = APOSTBase.part.grid_to_atom_idx
+        else:
+            raise ValueError(f'Need a partition to generate SMO. Got{APOSTBase.part}')
+
+        # Deal with coefficients depending on SD or correlated
+        if self.sd:
+            thresh = 1e-10
+            occ_coeff_a = self.mo_coeff_a[:, self.occ_a > thresh]
+            occ_coeff_b = self.mo_coeff_b[:, self.occ_b > thresh]
+            occ_a = self.occ_a[self.occ_a > thresh]
+            occ_b = self.occ_b[self.occ_b > thresh]
+            dm_a = self.dm_a
+            dm_b = self.dm_b
+
+            grid_coords1 = np.ascontiguousarray(copy.copy(self.part.grid_coords))
+            print(f'TOTAL NUMBER OF GRID1 POINTS: {grid_coords1.shape}')
+
+            # if self.part:
+            xc_code, xc_type = self.xc_code
+            if xc_type == 'LDA' or xc_type is None:
+                ao_dens = eval_ao(self._mol, self.part.grid_coords, deriv=0)
+                eval_ao_grid1 = ao_dens
+            elif xc_type == 'GGA':
+                ao_dens = eval_ao(self._mol, self.part.grid_coords, deriv=1)
+                eval_ao_grid1 = ao_dens[0, :, :]
+                # eval_ao_grad_grid1 = ao_dens[1:, :, :]
+
+            else:
+                raise TypeError(f"Unknown XC type: {xc_type}")
+
+            if self.unrestr:
+                eval_mo_grid1_b = np.ascontiguousarray(np.einsum('pa,ai->ip ', eval_ao_grid1, occ_coeff_b))
+                dens_grid_1_b = np.zeros((eval_mo_grid1_b.shape[1]))
+                for i in range(eval_mo_grid1_b.shape[0]):
+                    dens_grid_1_b += eval_mo_grid1_b[i, :] * eval_mo_grid1_b[i, :] * occ_b[i]
+
+            eval_mo_grid1_a = np.ascontiguousarray(np.einsum('pa,ai->ip ', eval_ao_grid1, occ_coeff_a))
+            dens_grid_1_a = np.zeros((eval_mo_grid1_a.shape[1]))
+            for i in range(eval_mo_grid1_a.shape[0]):
+                dens_grid_1_a += eval_mo_grid1_a[i, :] * eval_mo_grid1_a[i, :] * occ_a[i]
+
+            total_elect_int_1_a = np.sum(dens_grid_1_a * mol_w * wq)
+            if APOSTBase.unrestr:
+                print('CHECK ALPHA TOTAL ELECT INT 1', total_elect_int_1_a)
+                total_elect_int_1_b = np.sum(dens_grid_1_b * mol_w * wq)
+                print('CHECK BETA TOTAL ELECT INT ', total_elect_int_1_b)
+            else:
+                print('CHECK TOTAL ELECT INT 1', total_elect_int_1_a)
+
+        elif self.cas or self._fci:
+            if self.cas:
+                # For now only restricted CASSCF --> Underlying mo coeffs in one matrix (R or RO)
+                mo_coeff = self._cas_mo_coeff
+                norb = self._cas_data['ncas'] + self._cas_data['ncore']
+            elif self._fci:
+                mo_coeff = self._fci_mo_coeff
+                norb = self._fci_data['norb']
+
+            grid_coords1 = np.ascontiguousarray(copy.copy(self.part.grid_coords))
+            print(f'TOTAL NUMBER OF GRID1 POINTS: {grid_coords1.shape}')
+
+            eval_ao_grid1 = eval_ao(self._mol, grid_coords1, deriv=0)
+            eval_mo_grid1_a = np.einsum('pa,ai->ip ', eval_ao_grid1, mo_coeff[:, :norb])
+
+            dens_grid_1 = np.zeros((eval_mo_grid1_a.shape[1]))
+            for i in range(eval_mo_grid1_a.shape[0]):
+                for j in range(eval_mo_grid1_a.shape[0]):
+                    dens_grid_1 += eval_mo_grid1_a[i, :] * eval_mo_grid1_a[j, :] * self._dij[i,j]
+
+            total_elect_int_1 = np.sum(dens_grid_1 * mol_w * wq)
+            print('CHECK ALPHA TOTAL ELECT INT 1', total_elect_int_1)
+
+        # Generate SMO
+        if self.unrestr and not (self.cas or self._fci):
+            thresh = 1e-10
+            smo = np.zeros((2, len(self.at_nums), eval_mo_grid1_a.shape[0], eval_mo_grid1_a.shape[0]))
+            for ia in range(len(self.at_nums)):
+                sij_alpha = np.sum(eval_mo_grid1_a[None, :] * self.part.aim_w_allp[ia] * eval_mo_grid1_a[:, None, :] * wq * mol_w, axis=-1)
+                sij_beta = np.sum(eval_mo_grid1_b[None, :] * self.part.aim_w_allp[ia] * eval_mo_grid1_b[:, None, :] * wq * mol_w, axis=-1)
+                smo[0, ia, :, :] = sij_alpha
+                smo[1, ia, :self.occ_b[self.occ_b > thresh].shape[0], :self.occ_b[self.occ_b > thresh].shape[ 0]] = sij_beta
+
+                # sij_alpha = np.sum(eval_mo_grid1_a[None, :] * self.part.aim_w_allp[ia] * eval_mo_grid1_a[ :, None, :] * wq * mol_w, axis=-1)
+                # sij_beta = np.sum(eval_mo_grid1_b[None, :] * self.part.aim_w_allp[ia] * eval_mo_grid1_b[:, None, :] * wq * mol_w, axis=-1)
+                # smo[ia, :, :] = sij_alpha
+                # smo[1, ia, :self.occ_b[self.occ_b > 0].shape[0], :self.occ_b[self.occ_b > 0].shape[0]] = sij_beta
+        else:
+            smo = np.zeros((len(self.at_nums), eval_mo_grid1_a.shape[0], eval_mo_grid1_a.shape[0]))
+            for ia in range(len(self.at_nums)):
+                sij_alpha = np.sum(eval_mo_grid1_a[None, :] * self.part.aim_w_allp[ia] * eval_mo_grid1_a[:, None, :] * wq * mol_w, axis=-1)
+                smo[ia, :, :] = sij_alpha
+        return smo
+
+
 
 # todo: change zfrags and frags from duplicated code in Hpart/Rpart to APOSTBase class
 
@@ -805,9 +1087,10 @@ class Rpart(object):
         else:
             raise NotImplementedError(f"Unknown part name: {part_name}")
 
-        # Todo: decide what to do with computing the density. the question is how to minimize repetition of code as much as possible.
-        # Evaluate density on a grid
-        # Store computed atomic orbitals in a grid
+        # # Todo: decide what to do with computing the density. the question is how to minimize repetition of code as much as possible.
+        # # Evaluate density on a grid
+        # # Store computed atomic orbitals in a grid
+        #  todo: Delete below and update tests
         self._ao_eval_grid = eval_ao(mol, self._coords)
         dens_ao = eval_ao(mol, self._coords)
         if isinstance(dm, tuple) and len(dm) == 2:
