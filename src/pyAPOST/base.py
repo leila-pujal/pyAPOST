@@ -621,9 +621,9 @@ class APOSTBase(object):
 
 
         # Initialize Hpart or Rpart
-        if part_name in ["mulliken", "lowdin", "meta_lowdin", "iao", "nao"]:
+        if part_name.lower() in ["mulliken", "lowdin", "meta_lowdin", "iao", "nao"]:
             self._part = Hpart(part_name, mol, frags=frags)
-        elif part_name in ["becke", 'tfvc']:
+        elif part_name.lower() in ["becke", 'tfvc']:
             if self._unrestr:
                 dm = (self._dm_a, self._dm_b)
             else:
@@ -634,7 +634,7 @@ class APOSTBase(object):
                     raise TypeError(" rpart_specs must be a dict")
             self._part = Rpart(part_name, mol, dm, self._at_nums, frags=frags, grid_specs=rpart_specs)
         elif isinstance(part_name, str):
-            raise ValueError("Could not identify partition. Choose from: Mulliken,Lowdin,Meta-Lowdin,NAO")
+            raise ValueError("Could not identify partition. Choose from: 'Becke', 'TFVC', Mulliken,Lowdin,Meta-Lowdin,NAO")
         else:
             logger.info('No partition. Only calculation of global values available')
             self._part = None
@@ -786,6 +786,7 @@ class APOSTBase(object):
     def generate_smo(self):
         """WIP: Generate overlap matrices for molecular orbitals"""
 
+        # Todo: Add for Hilbert space
         # at_coords = APOSTBase.at_coords
         # at_nums = np.array(APOSTBase.at_nums)
         # Grid info
