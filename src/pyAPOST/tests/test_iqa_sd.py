@@ -83,6 +83,7 @@ def test_o2_r_lda_x_cc_pvtz_singlet():
     assert_allclose(r_iqa[0]['t_nn'], 31.73736, rtol=1.e-4, atol=1e-8)
     assert_allclose(r_iqa[0]['t_en'],-417.49882, rtol=1.e-4, atol=1e-8)
     assert_allclose(r_iqa[0]['t_kin'], 148.98775, rtol=1.e-4, atol=1e-8)
+    # assert_allclose(r_iqa[0]['t_kin'], 149.008601, rtol=1.e-4, atol=1e-8)
     assert_allclose(r_iqa[0]['t_coul'], 103.59446, rtol=1.e-2, atol=1e-8)
     assert_allclose(r_iqa[0]['t_dft_xc'], -14.9120465, rtol=1.e-2, atol=1e-8)
     # Results are compared with TFVC partition for APOST3D, Version 4

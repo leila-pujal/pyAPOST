@@ -8,7 +8,7 @@ from pyAPOST.utils import  out_ee_terms_analyt
 
 
 
-def compute_energy_terms(APOSTBase, term='all'):
+def compute_energy_terms(APOSTBase, term='all', out=True):
     """Function to compute energy terms from AO integrals."""
 
     # Convert to list
@@ -116,7 +116,7 @@ def compute_energy_terms(APOSTBase, term='all'):
                 # Todo: Fix the mismatch for CASSCF/ROHF and FCI. We save the ROHF as an unrestricted
                 # calculation but the internal scf.ROHF only saves 1 set of mo_coeff and no occ_a/occ_b. Because of
                 # this we compute a/b separately and only apply 1/2 of the value instead of 1.4
-                # that would be closed shell becasue we use a DM1_a/DM1_b with occs<=1. From natural orbitals?
+                # that would be closed shell because we use a DM1_a/DM1_b with occs<=1. From natural orbitals?
                 e_terms['x_a'] = -0.5 * np.einsum("ac,abcd,bd->", dm1_a, eri_4fold, dm1_a)
                 e_terms['x_b'] = -0.5 * np.einsum("ac,abcd,bd->", dm1_b, eri_4fold, dm1_b)
             else:
@@ -154,10 +154,12 @@ def compute_energy_terms(APOSTBase, term='all'):
         e_terms['new_x']= e_terms['x_a'] + e_terms['x_b'] + e_terms['u12']
         e_terms['old_c'] = e_terms['ee'] -  e_terms['coul']- e_terms['old_x']
         e_terms['new_c'] = e_terms['ee'] -  e_terms['coul'] - e_terms['new_x']
+        e_terms['xc'] = e_terms['ee'] - e_terms['coul']
 
-
-    out_ee_terms_analyt(e_terms, APOSTBase.energy, APOSTBase._mol.energy_nuc())
+    if out:
+        out_ee_terms_analyt(e_terms, APOSTBase.energy, APOSTBase._mol.energy_nuc())
     e_terms['nn'] = APOSTBase._mol.energy_nuc()
+
 
     return e_terms
 

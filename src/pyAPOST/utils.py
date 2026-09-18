@@ -398,7 +398,30 @@ def out_summary_phf(iqa_data, at_nums, total_energy, correlation=False):
             print(f"{at1}   " + " ".join(row_r))
         # print(f"{at}   {iqa_data[0]['at_coul'][idx]: .5f}")
         print()
-    if correlation:
+        vee_calc = iqa_data[0]['t_xc'] +iqa_data[0]['t_coul']
+        diff = abs(vee_calc- iqa_data[0]['vee'])
+        print(f"EE energy:  {vee_calc: .5f}")
+        print(f"EE energy(PySCF/Libcint):  {iqa_data[0]['vee']: .5f}")
+        print('DIFF (au) vee', diff)
+        print('DIFF (kcal/mol) vee', diff / 0.0015936014376406278)
+        print()
+        total_sum_energy = 0
+        for k in iqa_data[0].keys():
+            if k.startswith('t_'):
+            # print(k, iqa_data[0][k])
+            # if k in ['t_x', 't_c']:
+            #     pass
+            # else:
+                total_sum_energy += iqa_data[0][k]
+        print('NN energy', iqa_data[0]['t_nn'])
+        print('TOTAL ENERGY (SUM OF COMPONENTS):', total_sum_energy)
+        print('TOTAL ENERGY (PySCF):', total_energy)
+        print('DIFF (AU) :', total_sum_energy - total_energy)
+        print('DIFF (Kcal) :', (total_sum_energy - total_energy) / 0.0015936014376406278)
+#############################
+        return total_sum_energy
+
+    elif correlation:
         print('Independent exchange and correlation part')
         print('Exchange')
         print(f"Exchange energy: {iqa_data[0]['t_x']: .5f}", )
@@ -461,10 +484,12 @@ def out_ee_terms_analyt(ee_terms, t_energy, nn_energy):
               'old_x': 'Exchange energy (Alpha and beta exchange)',
               'new_x': 'Exchange energy (Alpha + beta + u^1/2 exchange)',
               'old_c': 'Correlation energy (from subtracting Exchange and Coulomb to the EE energy)',
-              'new_c': 'Correlation energy (from subtracting Exchange,Coulomb, and U^1/2 to the EE energy)'}
+              'new_c': 'Correlation energy (from subtracting Exchange,Coulomb, and U^1/2 to the EE energy)',
+              'xc': 'Exchange-Correlation energy (2-RDM substracting coulomb)'
+}
 
     for term in ee_terms.keys():
-        if term in ['u12_ps', 'old_x', 'new_x', 'old_c', 'new_c', 'total_terms', 'total_pyscf'  ]:
+        if term in ['u12_ps','u12', 'old_x', 'new_x', 'old_c', 'new_c', 'total_terms','total_pyscf', 'x_sf'  ]:
             pass
         else:
             print(f'{labels[term]}')
