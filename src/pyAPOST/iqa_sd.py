@@ -204,7 +204,12 @@ def kin_energy(at_nums, at_coords, mol, mo_coeff, occs, grid_coords, wq, aim_w, 
     # dens_010 = np.trace(np.dot(dm, (eval_d_ao[2, :, None, :] * eval_d_ao[2, None, :, :])))
     # dens_001 = np.trace(np.dot(dm, (eval_d_ao[3, :, None, :] * eval_d_ao[3, None, :, :])))
     for i_dv in range(1,4):
-        kin += np.trace(np.dot(occs, (eval_d_mo[i_dv, :, None, :] * eval_d_mo[i_dv, None, :, :])))
+        # kin += np.trace(np.dot(occs, (eval_d_mo[i_dv, :, None, :] * eval_d_mo[i_dv, None, :, :])))
+        # print(np.trace(np.dot(occs, (eval_d_mo[i_dv, :, None, :] * eval_d_mo[i_dv, None, :, :]))))
+        for imo in range(mo_coeff.shape[1]):
+            # kin += occs[imo][imo] * (eval_d_mo[i_dv, imo, :] * eval_d_mo[i_dv, imo, :])
+            for jmo in range(mo_coeff.shape[1]):
+                kin += occs[imo][jmo] * (eval_d_mo[i_dv, imo, :] * eval_d_mo[i_dv, jmo, :])
 
 
     # for i_dv in range(1,4):

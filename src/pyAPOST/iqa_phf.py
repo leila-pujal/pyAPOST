@@ -29,26 +29,11 @@ def _two_elect_integral_phf(id_p1, p1, mo_ovlp_alt1, mo_ovlp_alt2, atgrid_idx_b,
 # def _two_elect_integral_phf(id_p1, p1, occ, rij_v=1e-5):
 
     """ WIP: Auxiliary function for parallel calculation of 2e integrals from monadic diagonalized cumulant"""
-    # global NAT_PAIRS1, NAT_PAIRS2
-    # global ATGRID_A
-    # global ATGRID_B, ATGRID_INDEX_B
-    # global WQ, AIM_W1, AIM_W2
-
-    # mo_ovlp_alt1 = NAT_PAIRS1
-    # mo_ovlp_alt2 =NAT_PAIRS2
-    # a_grid_coords = ATGRID_A
-    # b_grid_coords = ATGRID_B
-    # atgrid_idx_b = ATGRID_INDEX_B
-    # wq = WQ
-    # aim_w1 = AIM_W1
-    # aim_w2 = AIM_W2
 
     rij = a_grid_coords[id_p1, :] - b_grid_coords
     rij = np.sqrt(np.sum(np.square(rij), axis=-1))
 
     ee = np.zeros(mo_ovlp_alt2[0, atgrid_idx_b].shape[0])
-    # if id_p1 ==1:
-    #     print('another point', id_p1)
     # With the cumulant the term we get is determined before
     for i in range(mo_ovlp_alt1.shape[0]):
         ee += occ[i]* mo_ovlp_alt1[i, p1] * mo_ovlp_alt2[i, atgrid_idx_b ]
