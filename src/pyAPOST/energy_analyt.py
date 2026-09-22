@@ -113,12 +113,20 @@ def compute_energy_terms(APOSTBase, term='all', out=True):
             e_terms['x_b'] =  - 0.5 *np.einsum("abba->", eri_4fold_b)
         else:
             if APOSTBase.cas or APOSTBase._fci:
+                #sfdm1 = np.zeros((norb, norb)) #spinfree density
+                #for i in range(norb):
+                #    for j in range(norb):
+                #        sfdm1[i,j] = dm1[i*2, j*2] + dm1[i*2+1, j*2+1]
+
                 # Todo: Fix the mismatch for CASSCF/ROHF and FCI. We save the ROHF as an unrestricted
                 # calculation but the internal scf.ROHF only saves 1 set of mo_coeff and no occ_a/occ_b. Because of
                 # this we compute a/b separately and only apply 1/2 of the value instead of 1.4
                 # that would be closed shell because we use a DM1_a/DM1_b with occs<=1. From natural orbitals?
                 e_terms['x_a'] = -0.5 * np.einsum("ac,abcd,bd->", dm1_a, eri_4fold, dm1_a)
                 e_terms['x_b'] = -0.5 * np.einsum("ac,abcd,bd->", dm1_b, eri_4fold, dm1_b)
+                print('TEST ',  dm1_a.shape, dm1_b.shape )
+                e_terms['x_sf'] = -0.25 * np.einsum("ac,abcd,bd->", dm1_a + dm1_b , eri_4fold, dm1_a+ dm1_b)
+
             else:
                 e_terms['x_a'] = - np.einsum("abba->", eri_4fold)
                 # e_terms['x_b'] = -0.25 * np.einsum("ac,abcd,bd->", dm1_b[:norb, :norb], eri_4fold, dm1_b[:norb, :norb])
@@ -141,7 +149,7 @@ def compute_energy_terms(APOSTBase, term='all', out=True):
 
 
     if ('u12_ps' in term or 'all' in term) and (APOSTBase._cas or APOSTBase._fci):
-        u, u12 = unpaired_elec(APOSTBase._dij, APOSTBase.at_nums, APOSTBase.smo)
+        u, u12 = unpaired_elec(APOSTBase._dij, APOSTBase.at_nums)
         e_terms['u12'] = -0.25 * np.einsum("ac,abcd,bd->", u12, eri_4fold, u12)
 
         # DEV: For new exchange.
@@ -151,7 +159,8 @@ def compute_energy_terms(APOSTBase, term='all', out=True):
 
 
         e_terms['old_x']=  e_terms['x_a']+ e_terms['x_b']
-        e_terms['new_x']= e_terms['x_a'] + e_terms['x_b'] + e_terms['u12']
+        #e_terms['new_x']= e_terms['x_a'] + e_terms['x_b'] + e_terms['u12']
+        e_terms['new_x']= e_terms['x_sf'] + e_terms['u12']
         e_terms['old_c'] = e_terms['ee'] -  e_terms['coul']- e_terms['old_x']
         e_terms['new_c'] = e_terms['ee'] -  e_terms['coul'] - e_terms['new_x']
         e_terms['xc'] = e_terms['ee'] - e_terms['coul']
