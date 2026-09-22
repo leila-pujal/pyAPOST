@@ -18,7 +18,7 @@ def bo_dens(at_nums, eval_mo_grid, wq, aim_w, atgrid_idx, aim_w_all, eval_mo_gra
     bo_d = np.zeros((len(at_nums), len(at_nums), eval_mo_grid.shape[1]))
     if isinstance(eval_mo_grad_grid, np.ndarray):
         grad_bo = np.zeros((len(at_nums), len(at_nums), 3, eval_mo_grad_grid.shape[2]))
-    # Todo: Use smo
+
     for ia in range(len(at_nums)):
         for ib in range(len(at_nums)):
             sij_a = np.sum(eval_mo_grid[None, :] * aim_w_all[ia] * eval_mo_grid[:,None, :] * wq * aim_w, axis=-1)
@@ -42,16 +42,17 @@ def bo_dens(at_nums, eval_mo_grid, wq, aim_w, atgrid_idx, aim_w_all, eval_mo_gra
 
 
 
-def unpaired_elec(dij, at_nums, smo):
+def unpaired_elec(dij, at_nums, smo=None):
     """Function to compute matrix of unpaired electrons"""
     u = 2 * dij- np.dot(dij, dij)
-    for idx1, at1 in enumerate(at_nums):
-        if len(smo.shape) > 3:
-            print('Warning: Unpaired for unrestricted post-HF methods not tested')
-            smo_t = smo[0][idx1] + smo[1][idx1]
-            print(f'Number of unpaired electrons atom {idx1+1} {at1}', np.trace(np.dot(u, smo_t)) )
-        else:
-            print(f'Number of unpaired electrons atom {idx1+1} {at1}', np.trace(np.dot(u, smo[idx1])))
+    if smo is not None:
+        for idx1, at1 in enumerate(at_nums):
+            if len(smo.shape) > 3:
+                print('Warning: Unpaired for unrestricted post-HF methods not tested')
+                smo_t = smo[0][idx1] + smo[1][idx1]
+                print(f'Number of unpaired electrons atom {idx1+1} {at1}', np.trace(np.dot(u, smo_t)) )
+            else:
+                print(f'Number of unpaired electrons atom {idx1+1} {at1}', np.trace(np.dot(u, smo[idx1])))
 
 
     # Construct u^1/2
@@ -61,12 +62,12 @@ def unpaired_elec(dij, at_nums, smo):
 
 
 
-def compute_bo(APOSTBase, bo_type=('all')):
+def compute_bo(APOSTBase, bo_type=['all']):
     """WIP: General function to call bond orders"""
 
     # Convert to list
     if isinstance(bo_type, str):
-        bo_type = (bo_type)
+        bo_type = [bo_type]
 
     # check populations
     print('DEV COMPUTE BO')
