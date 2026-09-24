@@ -3,19 +3,19 @@ import pytest as pytest
 import copy as copy
 from numpy.ma.testutils import assert_equal, assert_almost_equal, assert_allclose
 
-from pyscf import gto,scf,dft,lib, mcscf
+from pyscf import gto,scf,dft,lib, mcscf, fci
 
 from pyAPOST.base import APOSTBase, Rpart, Hpart
 
-def o2_pyscf(method, spin,basis, cas_method=None):
+def o2_pyscf(method, spin,basis, cas_method=None, sym=True):
     """Class to compute o2 molecule with pyscf specifying method and spin to pass to CAS method"""
     with lib.with_omp_threads(1):
         mol = gto.M(atom=[
             [8, (0.5845381, 1.3618218, 0.0)],
             [8, (1.0054419, 2.3424182, 0.0)]], basis=basis)
         mol.cart = False
-        mol.symmetry = False
-        mol.ms = spin
+        mol.symmetry = sym
+        mol.spin = spin
         mol.build()
         if method == 'RHF':
             calc = scf.RHF(mol)
@@ -77,6 +77,55 @@ def h2o_pyscf(method, spin,basis, cas_method=None):
             return mol, calc
 
 
+def lih_pyscf(method, spin,basis, cas_method=None):
+    """Class to compute h2o molecule with pyscf specifying method and spin to pass to CAS method"""
+    with lib.with_omp_threads(1):
+        mol = gto.M(atom=[
+                    [3, (-1.23987766, 1.7976043966, 0.0000000000)],
+                    [1, (5.11700418, 2.7543473799, 0.0000000000)]], basis=basis, unit='Bohr')
+        mol.cart = False
+        mol.symmetry = True
+        mol.ms = spin
+        mol.build()
+        if method == 'RHF':
+            calc = scf.RHF(mol)
+        elif method == 'UHF':
+            calc = scf.UHF(mol)
+        elif len(method) == 2 and method[0] == 'RKS':
+            calc = dft.RKS(mol)
+            calc.xc = method[1].upper()
+        elif len(method) == 2 and method[0] == 'UKS':
+            calc = dft.UKS(mol)
+            calc.xc = method[1].upper()
+        calc.kernel()
+
+        # check that we pass the correct cas_method
+        print()
+        if cas_method and len(cas_method) == 3:
+            if cas_method[0] == 'CASSCF':
+                cas_calc = mcscf.CASSCF(calc,cas_method[1],cas_method[2]) # orbitals, electrons
+                cas_calc.kernel()
+                return mol, cas_calc
+            elif cas_method[0] == 'CASCI':
+                cas_calc = mcscf.CASCI(calc,cas_method[1],cas_method[2]) # orbitals, electrons
+                cas_calc.kernel()
+                return mol, cas_calc
+        elif cas_method[0] == 'FCI':
+            cisolver = fci.FCI(mol, calc.mo_coeff)
+            e1, ci1 = cisolver.kernel()
+            dic_fci = {}
+            dic_fci['ci'] = cisolver.ci
+            dic_fci['norb'] = cisolver.norb
+            dic_fci['nelec'] = cisolver.nelec
+            dic_fci['e_tot'] = cisolver.e_tot
+            dic_fci['dm1_s'] = cisolver.make_rdm1s(cisolver.ci, cisolver.norb, cisolver.nelec)
+            dic_fci['dm1'] = cisolver.make_rdm1(cisolver.ci, cisolver.norb, cisolver.nelec)
+            dic_fci['dm2'] = cisolver.make_rdm2(cisolver.ci, cisolver.norb, cisolver.nelec)
+            return mol, dic_fci, calc
+        else:
+            return mol, calc
+
+
 def test_APOSTBase_raise_exceptions():
     atom_grid_specs = {}
     atom_grid_specs['atom_grid'] = {"O": (40, 146)}
@@ -96,7 +145,7 @@ def test_APOSTBase_raise_exceptions():
 def test_dm1_dm2():
     atom_grid_specs = {}
     atom_grid_specs['atom_grid'] = {"O": (40, 146)}
-    mol, calc = o2_pyscf('RHF', 1, basis='cc-pvtz', cas_method=['CASSCF', 6, 8])
+    mol, calc = o2_pyscf('RHF', 2, basis='cc-pvtz', cas_method=['CASSCF', 6, 8])
     base_apost = APOSTBase(mol, calc, part_name="tfvc", rpart_specs=atom_grid_specs)
     t_core=0
     t_active=0

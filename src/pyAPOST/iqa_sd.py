@@ -843,13 +843,15 @@ def iqa_interatomic(APOSTBase, ph2=0.162, zero_error=False, rij_v=1e-5, ncpus=1,
     if APOSTBase.unrestr:
         print('CHECK ALPHA TOTAL ELECT INT 1', total_elect_int_1_a)
         print('CHECK ALPHA TOTAL ELECT INT 2', total_elect_int_2_a)
-        print('CHECK ALPHA TOTAL ELECT INT 3 (ZERO ERROR)', total_elect_int_3_a)
+        if zero_error:
+            print('CHECK ALPHA TOTAL ELECT INT 3 (ZERO ERROR)', total_elect_int_3_a)
         total_elect_int_1_b = np.sum(dens_grid_1_b * mol_w * wq)
         total_elect_int_2_b = np.sum(dens_grid_2_b * mol_w_2 * wq)
-        total_elect_int_3_b = np.sum(dens_grid_3_b * mol_w_3 * wq)
         print('CHECK BETA TOTAL ELECT INT 1', total_elect_int_1_b)
         print('CHECK BETA TOTAL ELECT INT 2', total_elect_int_2_b)
-        print('CHECK BETA TOTAL ELECT INT 3 (ZERO ERROR)', total_elect_int_3_b)
+        if zero_error:
+            total_elect_int_3_b = np.sum(dens_grid_3_b * mol_w_3 * wq)
+            print('CHECK BETA TOTAL ELECT INT 3 (ZERO ERROR)', total_elect_int_3_b)
     else:
         print('CHECK TOTAL ELECT INT 1', total_elect_int_1_a)
         print('CHECK TOTAL ELECT INT 2', total_elect_int_2_a)
@@ -1045,13 +1047,15 @@ def iqa_interatomic(APOSTBase, ph2=0.162, zero_error=False, rij_v=1e-5, ncpus=1,
     # Compute delta ee (For atomic terms) difference between pha1 and pha2
     # Compute new error and check if different sign
     # Compute new angle and obtain interpolated values for atomic terms
-    print('DEV ZERO ERROR: FIRST SUMMARY')
-    out_summary([iqa_r_a], at_nums, APOSTBase.energy)
     if zero_error:
         # Compute total error
         if APOSTBase.unrestr:
-            pass
+            raise NotImplementedError('zero error not implemented for SD unrestricted calculations')
         else:
+            if out:
+                print('DEV ZERO ERROR: FIRST SUMMARY')
+                out_summary([iqa_r_a], at_nums, APOSTBase.energy)
+
             vee_analytic = APOSTBase.energy - iqa_r_a['t_nn'] - iqa_r_a['t_kin'] - iqa_r_a['t_en']
             vee_iqa =  iqa_r_a['t_coul'] +  iqa_r_a['t_exch']
             # vee_analytic = iqa_r_a['ee_analyt']
@@ -1185,13 +1189,17 @@ def iqa_atomic(APOSTBase, ee_hf=True, out=True):
     # todo: Put a warning for the methods we load a calc and a post-hartre fock method objects in case there are discrepencies
     # between the number of MOs because of the threshold
     thresh = 1e-11
+    occ_coeff_a = APOSTBase.mo_coeff_a[:, APOSTBase.occ_a > thresh]
+    occ_coeff_b = APOSTBase.mo_coeff_b[:, APOSTBase.occ_b > thresh]
     if APOSTBase.cas or APOSTBase._fci:
         if APOSTBase.cas:
             norb = APOSTBase._cas_data['ncas'] + APOSTBase._cas_data['ncore']
+            occ_coeff_a = APOSTBase._cas_mo_coeff[:, :norb]
+            occ_coeff_b = APOSTBase._cas_mo_coeff[:, :norb]
         else:
             norb = APOSTBase._fci_data['norb']
-        occ_coeff_a = APOSTBase._cas_mo_coeff[:, :norb]
-        occ_coeff_b = APOSTBase._cas_mo_coeff[:, :norb]
+            occ_coeff_a = APOSTBase._fci_mo_coeff[:, :norb]
+            occ_coeff_b = APOSTBase._fci_mo_coeff[:, :norb]
     occ_a = APOSTBase.occ_a[APOSTBase.occ_a > thresh]
     occ_b = APOSTBase.occ_b[APOSTBase.occ_b > thresh]
     dm_a = APOSTBase.dm_a
@@ -1248,7 +1256,7 @@ def iqa_atomic(APOSTBase, ee_hf=True, out=True):
         iqa_r_a['kin_analyt'] = ee_terms['kin']
         iqa_r_a['en_analyt'] = ee_terms['en']
         iqa_r_a['coul_analyt'] = ee_terms['coul']
-        iqa_r_a['exch_analyt'] = ee_terms['x_a'] + ee_terms['x_b']
+        iqa_r_a['exch_analyt'] = ee_terms['x_a']
         iqa_r_a['ee_analyt'] = ee_terms['ee']
 
     if APOSTBase.unrestr:

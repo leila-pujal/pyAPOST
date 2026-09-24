@@ -53,7 +53,7 @@ class APOSTBase(object):
 
         self._kind_calc = str(type(calc))
         if not any([i in self._kind_calc for i in ["RHF", "RKS", "UHF", "UKS", "KS", "ROKS", "ROHF", "CASSCF","CASCI", "CCSD", "UCCSD"]]):
-            if not isinstance(calc, np.lib.npyio.NpzFile):
+            if not isinstance(calc, np.lib.npyio.NpzFile) and not isinstance(calc, dict):
                 raise TypeError(f'Calc object should correspond to a PySCF calculation. Got {self._kind_calc}')
 
         # Check that types for part_name, frag and rpart_specs
@@ -80,7 +80,7 @@ class APOSTBase(object):
         self._at_nums = [mol.atom_nelec_core(ia) + mol.atom_charge(ia) for ia in range(mol.natm)]
         self._alpha_elec = mol.nelec[0]
         self._beta_elec = mol.nelec[1]
-        if isinstance(calc, np.lib.npyio.NpzFile):
+        if isinstance(calc, np.lib.npyio.NpzFile) or isinstance(calc, dict):
             self._e_tot = calc['e_tot']
         else:
             self._e_tot = calc.e_tot
@@ -169,7 +169,7 @@ class APOSTBase(object):
                 print('ALPHA/BETA', self._occ_a)
                 print('TOTAL', np.sum(self._occ_a))
 
-        elif "FCI" in self._kind_calc or isinstance(calc, np.lib.npyio.NpzFile):
+        elif "FCI" in self._kind_calc or isinstance(calc, np.lib.npyio.NpzFile) or isinstance(calc, dict):
             self._fci = True
             if scf_calc is not None:
                 if "ROHF" in str(type(scf_calc)):
@@ -185,7 +185,7 @@ class APOSTBase(object):
             else:
                 raise TypeError(f"Initializing with a FCI calculation but without a scf_calc. Got {scf_calc}")
 
-            if isinstance(calc, np.lib.npyio.NpzFile):
+            if isinstance(calc, np.lib.npyio.NpzFile) or isinstance(calc, dict):
                 # casdm1s=fci.FCI.make_rdm1s(calc['ci'], calc['norb'], (calc['nelec'][0], calc['nelec'][1]))
                 casdm1s= calc['dm1_s']
                 dm1_pyscf=calc['dm1']
@@ -196,7 +196,7 @@ class APOSTBase(object):
 
             # For IQA-PHF we only need norb after saving the DMs.
             # Keeping it for now (as protected attribute of the class) to see if we needed for the spin
-            if isinstance(calc,np.lib.npyio.NpzFile):
+            if isinstance(calc,np.lib.npyio.NpzFile) or isinstance(calc, dict):
                 self._fci_data = {}
                 self._fci_data['nelec'] = calc['nelec']  # total cas electrons tuple(alpha,beta) now only taking alpha because restricted
                 self._fci_data['norb'] = calc['norb']  # Number orbitals
@@ -273,7 +273,7 @@ class APOSTBase(object):
             print('CHECK: Density from Natural orbitals in AO basis: ', d)
 
             # Now saving dm2
-            if isinstance(calc, np.lib.npyio.NpzFile):
+            if isinstance(calc, np.lib.npyio.NpzFile) or isinstance(calc, dict):
                 dm2 = calc['dm2']
             else:
                 dm2 =calc.make_rdm2(calc.ci, calc.norb, calc.nelec)

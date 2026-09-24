@@ -14,7 +14,7 @@ def test_o2_rhf_cc_pvtz_singlet():
     # Results are compared against Analytical values
     atom_grid_specs = {}
     atom_grid_specs['atom_grid'] = {"O": (40, 146)}
-    mol, calc = o2_pyscf('RHF', 0, basis='cc-pvtz')
+    mol, calc = o2_pyscf('RHF', 0, basis='cc-pvtz', sym=False)
     base_apost = APOSTBase(mol, calc, part_name="tfvc", rpart_specs=atom_grid_specs)
     r_iqa = iqa_interatomic(base_apost, ph2=0.162, rij_v=1e-10, ncpus=4, out=False)
     assert_allclose(r_iqa[0]['t_nn'], 31.73736, rtol=1e-4, atol=1e-8)
@@ -44,7 +44,7 @@ def test_o2_uhf_cc_pvtz_triplet():
     # Results are compared against Analytical values
     atom_grid_specs = {}
     atom_grid_specs['atom_grid'] = {"O": (40, 146)}
-    mol, calc = o2_pyscf('UHF', 1, basis='cc-pvtz')
+    mol, calc = o2_pyscf('UHF', 2, basis='cc-pvtz', sym=False)
     base_apost = APOSTBase(mol, calc, part_name="tfvc", rpart_specs=atom_grid_specs)
     r_iqa = iqa_interatomic(base_apost, ph2=0.162, rij_v=1e-10, ncpus=4, out=False)
     assert_allclose(r_iqa[0]['t_nn'], 31.73736434, rtol=1.e-4, atol=1e-8)
@@ -77,7 +77,7 @@ def test_o2_r_lda_x_cc_pvtz_singlet():
     # Results are compared against Analytical values
     atom_grid_specs = {}
     atom_grid_specs['atom_grid'] = {"O": (40, 146)}
-    mol, calc = o2_pyscf(('RKS', 'lda_x'), 0, basis='cc-pvtz')
+    mol, calc = o2_pyscf(('RKS', 'lda_x'), 0, basis='cc-pvtz', sym=False)
     base_apost = APOSTBase(mol, calc, part_name="tfvc", rpart_specs=atom_grid_specs)
     r_iqa = iqa_interatomic(base_apost, ph2=0.162, rij_v=1e-10, ncpus=4, out=False)
     assert_allclose(r_iqa[0]['t_nn'], 31.73736, rtol=1.e-4, atol=1e-8)
@@ -109,7 +109,7 @@ def test_o2_u_lda_x_cc_pvtz_triplet():
     # Results are compared against Analytical values
     atom_grid_specs = {}
     atom_grid_specs['atom_grid'] = {"O": (40, 146)}
-    mol, calc = o2_pyscf(('UKS', 'lda_x'), 1, basis='cc-pvtz')
+    mol, calc = o2_pyscf(('UKS', 'lda_x'), 2, basis='cc-pvtz', sym=False)
     base_apost = APOSTBase(mol, calc, part_name="tfvc", rpart_specs=atom_grid_specs)
     r_iqa = iqa_interatomic(base_apost, ph2=0.162, rij_v=1e-10, ncpus=4, out=False)
     assert_allclose(r_iqa[0]['t_nn'], 31.73736, rtol=1.e-4, atol=1e-8)
@@ -140,7 +140,7 @@ def test_o2_r_b3lyp_def2svp_singlet():
     # Results are compared against Analytical values
     atom_grid_specs = {}
     atom_grid_specs['atom_grid'] = {"O": (40, 146)}
-    mol, calc = o2_pyscf(('RKS', 'b3lyp'), 0, basis='cc-pvtz')
+    mol, calc = o2_pyscf(('RKS', 'b3lyp'), 0, basis='cc-pvtz', sym=False)
     base_apost = APOSTBase(mol, calc, part_name="tfvc", rpart_specs=atom_grid_specs)
     r_iqa = iqa_interatomic(base_apost, ph2=0.162, rij_v=1e-10, ncpus=4, out=False)
     assert_allclose(r_iqa[0]['t_nn'], 31.73736, rtol=1.e-4, atol=1e-8)
@@ -176,7 +176,7 @@ def test_o2_u_b3lyp_def2svp_triplet():
     # Results are compared against Analytical values
     atom_grid_specs = {}
     atom_grid_specs['atom_grid'] = {"O": (40, 146)}
-    mol, calc = o2_pyscf(('UKS', 'b3lyp'), 1, basis='cc-pvtz')
+    mol, calc = o2_pyscf(('UKS', 'b3lyp'), 2, basis='cc-pvtz', sym=False)
     base_apost = APOSTBase(mol, calc, part_name="tfvc", rpart_specs=atom_grid_specs)
     r_iqa = iqa_interatomic(base_apost, ph2=0.162, rij_v=1e-10, ncpus=4, out=False)
     assert_allclose(r_iqa[0]['t_nn'], 31.73736, rtol=1.e-4, atol=1e-8)
@@ -212,7 +212,7 @@ def test_o2_ro_b3lyp_def2svp_triplet():
     # Results are compared against Analytical values
     atom_grid_specs = {}
     atom_grid_specs['atom_grid'] = {"O": (40, 146)}
-    mol, calc = o2_pyscf(('RKS', 'b3lyp'), 1, basis='cc-pvtz')
+    mol, calc = o2_pyscf(('RKS', 'b3lyp'), 2, basis='cc-pvtz', sym=False)
     base_apost = APOSTBase(mol, calc, part_name="tfvc", rpart_specs=atom_grid_specs)
     r_iqa = iqa_interatomic(base_apost, ph2=0.162, rij_v=1e-10, ncpus=4, out=False)
     assert_allclose(r_iqa[0]['t_nn'], 31.73736, rtol=1.e-4, atol=1e-8)
