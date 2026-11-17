@@ -5,7 +5,6 @@ import copy as copy
 from pyscf.dft.numint import eval_ao
 from pyscf import lo
 
-from pyAPOST.base import APOSTBase
 from pyAPOST.utils import out_bo
 
 
@@ -102,16 +101,6 @@ def compute_bo(APOSTBase, bo_type=['all']):
         occ_a = APOSTBase.occ_a[APOSTBase.occ_a > 0]
         d = np.diag(occ_a)
 
-    # Compute Populations
-    for idx1, at1 in enumerate(APOSTBase.at_nums):
-        if APOSTBase.unrestr and not (APOSTBase.cas or APOSTBase._fci):
-            pop_a = np.trace(np.dot(d_alpha, APOSTBase.smo[0, idx1]))
-            pop_b = np.trace(np.dot(d_beta, APOSTBase.smo[1, idx1]))
-            print(f"POP {at1}   {(pop_a+pop_b): .4f}/ {(pop_a): .4f},{(pop_b): .4f}")
-        else:
-            pop = np.trace(np.dot(d, APOSTBase.smo[idx1]))
-            print(f"POP {at1}   {(pop): .4f}")
-
     # Compute  Bond orders
     bo_r = {}
     if 'mayer' in bo_type or 'all' in bo_type:
@@ -175,6 +164,7 @@ def compute_bo(APOSTBase, bo_type=['all']):
 
         bo_di = np.zeros((len(APOSTBase.at_nums), len(APOSTBase.at_nums)))
         # Obtain xc cumulant from DM2
+        # Todo: Change this to use the new  function generate_two_electron_density in corr.py
         xc_cumul = np.zeros((norb, norb, norb, norb))
         for i in range(norb):
             for j in range(norb):
@@ -192,7 +182,49 @@ def compute_bo(APOSTBase, bo_type=['all']):
 
         bo_r['DI'] =  bo_di
 
-    out_bo(APOSTBase.at_nums, bo_r)
-
-
+    out_bo(APOSTBase.at_nums, bo_r, index_type='bond_order')
     return bo_r
+
+
+def compute_pop(APOSTBase):
+    """WIP compute populations """
+
+    # Compute Populations
+    # Todo: Check if there are fragments
+    # Todo: Add tests
+    # Deal with type of wavefunction
+    # Todo: Below code to prepare data is used elsewhere. We need to define a stand-alone function
+    if APOSTBase._cas or APOSTBase._fci:
+        d = APOSTBase._dij # spinfree density
+    elif APOSTBase.unrestr:
+        # UHF
+        # Construct diagonal matrices with the occupations in the diagonal
+        occ_a = APOSTBase.occ_a[APOSTBase.occ_a > 0]
+        occ_b = np.zeros_like(APOSTBase.occ_a[APOSTBase.occ_a > 0])
+        occ_b[:APOSTBase.occ_b[APOSTBase.occ_b > 0].shape[0]] = APOSTBase.occ_b[APOSTBase.occ_b > 0]
+        d_alpha = np.diag(occ_a)
+        d_beta = np.diag(occ_b)
+    else:
+        occ_a = APOSTBase.occ_a[APOSTBase.occ_a > 0]
+        d = np.diag(occ_a)
+
+    print(f"COMPUTE POPULATIONS FOR PARTITION: {APOSTBase.part.part_name}")
+    # Note: Gross/Net population for Mulliken depending on generate_smo in base.py
+    pop_a_m = {}
+    pop_b_m = {}
+    pop_m = {}
+    for idx1, at1 in enumerate(APOSTBase.at_nums):
+        if APOSTBase.unrestr and not (APOSTBase.cas or APOSTBase._fci):
+            pop_a = np.trace(np.dot(d_alpha, APOSTBase.smo[0, idx1]))
+            pop_b = np.trace(np.dot(d_beta, APOSTBase.smo[1, idx1]))
+            pop_a_m[f'at_{idx1+1}'] = {'Z':at1, 'POP':pop_a}
+            pop_a_m[f'at_{idx1+1}'] = {'Z':at1, 'POP': pop_b}
+            pop_m[f'at_{idx1+1}'] = {'Z':at1, 'POP': pop_a + pop_b}
+            print(f"POP AT:{idx1+1}({at1})   {(pop_a + pop_b): .4f}/ {(pop_a): .4f},{(pop_b): .4f}")
+        else:
+            pop = np.trace(np.dot(d, APOSTBase.smo[idx1]))
+            pop_m[f'at_{idx1+1}'] = {'Z':at1, 'POP': pop}
+            print(f"POP AT:{idx1+1}({at1})   {(pop): .4f}")
+
+    return pop_m, pop_a_m, pop_b_m
+
