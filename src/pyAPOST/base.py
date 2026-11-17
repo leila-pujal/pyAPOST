@@ -7,7 +7,6 @@ import copy as copy
 from pyscf import mcscf, fci
 from pyscf import lo
 
-# Imports Real
 from pyscf.dft.numint import eval_ao
 from pyscf.dft.gen_grid import Grids, gen_atomic_grids, radi
 from pyscf.dft import gen_grid
@@ -192,7 +191,6 @@ class APOSTBase(object):
             else:
                 casdm1s=calc.make_rdm1s(calc.ci, calc.norb, (calc.nelec[0], calc.nelec[1]))
                 dm1_pyscf=calc.make_rdm1(calc.ci, calc.norb, (calc.nelec[0], calc.nelec[1]))
-            print(casdm1s[0].shape)
 
             # For IQA-PHF we only need norb after saving the DMs.
             # Keeping it for now (as protected attribute of the class) to see if we needed for the spin
@@ -257,7 +255,7 @@ class APOSTBase(object):
             occ_no = occ_no[::-1]  # Same as flip
             print('Natural orbitals from diagonalization of Dij')
             print('Natural orbital occupations (> 1e-8)')
-            print('dm1 diagonalization')
+            print('dm1 diagonalization pyscf (spinless)')
             print('   ' + ' '.join([str(round(o, 4)) for o in occ_no if o > 1e-8]))
 
             # get density from NOs as a linear combination of MO
@@ -300,7 +298,6 @@ class APOSTBase(object):
             self._occ_no = occ_no
             self._coeff_no = coeff_no
             self._fci_mo_coeff = scf_calc.mo_coeff
-            print(self._fci_mo_coeff.shape)
 
             # Transforming to dm1_a and dm1_b to AOs basis
             dm_a = np.einsum('ai, ij, jb -> ab', scf_calc.mo_coeff, dm1_a, scf_calc.mo_coeff.T)
@@ -308,7 +305,6 @@ class APOSTBase(object):
             print('CHECK TRANSFORM DM1_a (MOs) -> dm_a (AOs)', np.trace(np.dot(dm_a, self._ovlp)))
             print('CHECK TRANSFORM DM1_b (MOs) -> dm_b (AOs)', np.trace(np.dot(dm_b, self._ovlp)))
             self._dm_a = dm_a + dm_b
-            print(self._dm_a)
 
             # obtaining natural a and b occupations
             # Warning: Even tough we save it as occ_a and coeff_a this come from natural orbitals a and b
@@ -322,10 +318,8 @@ class APOSTBase(object):
                 occ_b, coeff_b = np.linalg.eigh(dm1_b)
                 self._coeff_b = np.flip(coeff_b, axis=1)
                 occ_b = occ_b[::-1]  # Same as flip
-                print(occ_a)
                 self._occ_a = occ_a + occ_b
                 self._occ_b = occ_a + occ_b
-                print(self._occ_a)
 
         elif ("CASSCF" in self._kind_calc) or ("CASCI" in self._kind_calc):
             self._cas = True
@@ -442,9 +436,10 @@ class APOSTBase(object):
             print('Building Spinless 1-RDM (DM1)')
             # dij = np.zeros(calc.mo_coeff.shape) # dim: basis functions, basis functions
             dij = np.zeros((norb, norb)) # dim: basis functions, basis functions
-            # todo: to check if we are repating building dij_a/dij_b
+            # todo: to check if we are repeating building dij_a/dij_b
             dij_a = np.zeros((norb, norb))
             dij_b = np.zeros((norb, norb))
+            print('spinorb, spinorb/2', spinorb, spinorb/2)
             for i in range(0, int(spinorb/2)):
                 for j in range(0, int(spinorb/2)):
                     dij[i, j] = dm1[i*2, j*2] + dm1[i*2+1, j*2+1]
@@ -452,6 +447,8 @@ class APOSTBase(object):
                     dij_b[i, j] = dm1[i*2+1, j*2+1]
 
             # diagonalizing Dij
+            print('dm1 built from scratch')
+            print('   ' + ' '.join([str(round(o, 4)) for o in np.diag(dij) if o > 1e-8]))
             occ_no, coeff_no = np.linalg.eigh(dij)
             coeff_no = np.flip(coeff_no, axis=1)
             occ_no = occ_no[::-1] # Same as flip
@@ -621,9 +618,9 @@ class APOSTBase(object):
 
 
         # Initialize Hpart or Rpart
-        if part_name.lower() in ["mulliken", "lowdin", "meta_lowdin", "iao", "nao"]:
-            self._part = Hpart(part_name, mol, frags=frags)
-        elif part_name.lower() in ["becke", 'tfvc']:
+        if part_name is not None and part_name.lower() in ["mulliken", "lowdin", "meta_lowdin", "nao"]:
+            self._part = Hpart(part_name, mol, calc, frags=frags)
+        elif part_name is not None and part_name.lower() in ["becke", 'tfvc']:
             if self._unrestr:
                 dm = (self._dm_a, self._dm_b)
             else:
@@ -787,104 +784,144 @@ class APOSTBase(object):
         """WIP: Generate overlap matrices for molecular orbitals"""
 
         # Todo: Add for Hilbert space
-        # at_coords = APOSTBase.at_coords
-        # at_nums = np.array(APOSTBase.at_nums)
-        # Grid info
-        if self.part:
-            wq = self.part.quadrature_weights
-            mol_w = self.part.aim_w
-            # atgrid_idx = APOSTBase.part.grid_to_atom_idx
-        else:
-            raise ValueError(f'Need a partition to generate SMO. Got{APOSTBase.part}')
+        if 'Rpart' in self.part.__class__.__name__:
+            # at_coords = APOSTBase.at_coords
+            # at_nums = np.array(APOSTBase.at_nums)
+            # Grid info
+            if self.part:
+                wq = self.part.quadrature_weights
+                mol_w = self.part.aim_w
+                # atgrid_idx = APOSTBase.part.grid_to_atom_idx
+            else:
+                raise ValueError(f'Need a partition to generate SMO. Got{APOSTBase.part}')
 
-        # Deal with coefficients depending on SD or correlated
-        if self.sd:
+            # Deal with coefficients depending on SD or correlated
+            if self.sd:
+                thresh = 1e-10
+                occ_coeff_a = self.mo_coeff_a[:, self.occ_a > thresh]
+                occ_coeff_b = self.mo_coeff_b[:, self.occ_b > thresh]
+                occ_a = self.occ_a[self.occ_a > thresh]
+                occ_b = self.occ_b[self.occ_b > thresh]
+                dm_a = self.dm_a
+                dm_b = self.dm_b
+
+                grid_coords1 = np.ascontiguousarray(copy.copy(self.part.grid_coords))
+                print(f'TOTAL NUMBER OF GRID1 POINTS: {grid_coords1.shape}')
+
+                # if self.part:
+                xc_code, xc_type = self.xc_code
+                if xc_type == 'LDA' or xc_type is None:
+                    ao_dens = eval_ao(self._mol, self.part.grid_coords, deriv=0)
+                    eval_ao_grid1 = ao_dens
+                elif xc_type == 'GGA':
+                    ao_dens = eval_ao(self._mol, self.part.grid_coords, deriv=1)
+                    eval_ao_grid1 = ao_dens[0, :, :]
+                    # eval_ao_grad_grid1 = ao_dens[1:, :, :]
+
+                else:
+                    raise TypeError(f"Unknown XC type: {xc_type}")
+
+                if self.unrestr:
+                    eval_mo_grid1_b = np.ascontiguousarray(np.einsum('pa,ai->ip ', eval_ao_grid1, occ_coeff_b))
+                    dens_grid_1_b = np.zeros((eval_mo_grid1_b.shape[1]))
+                    for i in range(eval_mo_grid1_b.shape[0]):
+                        dens_grid_1_b += eval_mo_grid1_b[i, :] * eval_mo_grid1_b[i, :] * occ_b[i]
+
+                eval_mo_grid1_a = np.ascontiguousarray(np.einsum('pa,ai->ip ', eval_ao_grid1, occ_coeff_a))
+                dens_grid_1_a = np.zeros((eval_mo_grid1_a.shape[1]))
+                for i in range(eval_mo_grid1_a.shape[0]):
+                    dens_grid_1_a += eval_mo_grid1_a[i, :] * eval_mo_grid1_a[i, :] * occ_a[i]
+
+                total_elect_int_1_a = np.sum(dens_grid_1_a * mol_w * wq)
+                if self.unrestr:
+                    print('CHECK ALPHA TOTAL ELECT INT 1', total_elect_int_1_a)
+                    total_elect_int_1_b = np.sum(dens_grid_1_b * mol_w * wq)
+                    print('CHECK BETA TOTAL ELECT INT ', total_elect_int_1_b)
+                else:
+                    print('CHECK TOTAL ELECT INT 1', total_elect_int_1_a)
+
+            elif self.cas or self._fci:
+                if self.cas:
+                    # For now only restricted CASSCF --> Underlying mo coeffs in one matrix (R or RO)
+                    mo_coeff = self._cas_mo_coeff
+                    norb = self._cas_data['ncas'] + self._cas_data['ncore']
+                elif self._fci:
+                    mo_coeff = self._fci_mo_coeff
+                    norb = self._fci_data['norb']
+
+                grid_coords1 = np.ascontiguousarray(copy.copy(self.part.grid_coords))
+                print(f'TOTAL NUMBER OF GRID1 POINTS: {grid_coords1.shape}')
+
+                eval_ao_grid1 = eval_ao(self._mol, grid_coords1, deriv=0)
+                eval_mo_grid1_a = np.einsum('pa,ai->ip ', eval_ao_grid1, mo_coeff[:, :norb])
+
+                dens_grid_1 = np.zeros((eval_mo_grid1_a.shape[1]))
+                for i in range(eval_mo_grid1_a.shape[0]):
+                    for j in range(eval_mo_grid1_a.shape[0]):
+                        dens_grid_1 += eval_mo_grid1_a[i, :] * eval_mo_grid1_a[j, :] * self._dij[i,j]
+
+                total_elect_int_1 = np.sum(dens_grid_1 * mol_w * wq)
+                print('CHECK ALPHA TOTAL ELECT INT 1', total_elect_int_1)
+
+            # Generate SMO
+            if self.unrestr and not (self.cas or self._fci):
+                thresh = 1e-10
+                smo = np.zeros((2, len(self.at_nums), eval_mo_grid1_a.shape[0], eval_mo_grid1_a.shape[0]))
+                for ia in range(len(self.at_nums)):
+                    sij_alpha = np.sum(eval_mo_grid1_a[None, :] * self.part.aim_w_allp[ia] * eval_mo_grid1_a[:, None, :] * wq * mol_w, axis=-1)
+                    sij_beta = np.sum(eval_mo_grid1_b[None, :] * self.part.aim_w_allp[ia] * eval_mo_grid1_b[:, None, :] * wq * mol_w, axis=-1)
+                    smo[0, ia, :, :] = sij_alpha
+                    smo[1, ia, :self.occ_b[self.occ_b > thresh].shape[0], :self.occ_b[self.occ_b > thresh].shape[ 0]] = sij_beta
+
+                    # sij_alpha = np.sum(eval_mo_grid1_a[None, :] * self.part.aim_w_allp[ia] * eval_mo_grid1_a[ :, None, :] * wq * mol_w, axis=-1)
+                    # sij_beta = np.sum(eval_mo_grid1_b[None, :] * self.part.aim_w_allp[ia] * eval_mo_grid1_b[:, None, :] * wq * mol_w, axis=-1)
+                    # smo[ia, :, :] = sij_alpha
+                    # smo[1, ia, :self.occ_b[self.occ_b > 0].shape[0], :self.occ_b[self.occ_b > 0].shape[0]] = sij_beta
+            else:
+                smo = np.zeros((len(self.at_nums), eval_mo_grid1_a.shape[0], eval_mo_grid1_a.shape[0]))
+                for ia in range(len(self.at_nums)):
+                    sij_alpha = np.sum(eval_mo_grid1_a[None, :] * self.part.aim_w_allp[ia] * eval_mo_grid1_a[:, None, :] * wq * mol_w, axis=-1)
+                    smo[ia, :, :] = sij_alpha
+            return smo
+
+        elif 'Hpart' in self.part.__class__.__name__:
+            # Generate S_AO_frags: This are the Atomic overlap matrices S^{A}
+            if self.part.part_name == 'mulliken':
+                # Todo: Add option to specify net or gross?
+                S_AO_frags = [np.linalg.multi_dot((eta_slices, self.ovlp, eta_slices)) for eta_slices
+                              in self.part.eta_frags]
+
+                # To obtain mulliken gross population
+                # S_AO_frags = [np.linalg.multi_dot((self.ovlp, eta_slices)) for eta_slices
+                #               in self.part.eta_frags]
+            else:
+                S_AO_frags = [np.linalg.multi_dot((self.part.T.T, eta_slice, self.part.T)) for
+                              eta_slice in self.part.eta_frags]
+
             thresh = 1e-10
             occ_coeff_a = self.mo_coeff_a[:, self.occ_a > thresh]
             occ_coeff_b = self.mo_coeff_b[:, self.occ_b > thresh]
-            occ_a = self.occ_a[self.occ_a > thresh]
-            occ_b = self.occ_b[self.occ_b > thresh]
-            dm_a = self.dm_a
-            dm_b = self.dm_b
+            # elif self.cas or self._fci:
+            #     if self.cas:
+            #         # For now only restricted CASSCF --> Underlying mo coeffs in one matrix (R or RO)
+            #         mo_coeff = self._cas_mo_coeff
+            #         norb = self._cas_data['ncas'] + self._cas_data['ncore']
+            #     elif self._fci:
+            #         mo_coeff = self._fci_mo_coeff
+            #         norb = self._fci_data['norb']
+            if self.unrestr and not (self.cas or self._fci):
+                smo = np.zeros((2, len(self.at_nums), occ_coeff_a.shape[1], occ_coeff_a.shape[1]))
 
-            grid_coords1 = np.ascontiguousarray(copy.copy(self.part.grid_coords))
-            print(f'TOTAL NUMBER OF GRID1 POINTS: {grid_coords1.shape}')
-
-            # if self.part:
-            xc_code, xc_type = self.xc_code
-            if xc_type == 'LDA' or xc_type is None:
-                ao_dens = eval_ao(self._mol, self.part.grid_coords, deriv=0)
-                eval_ao_grid1 = ao_dens
-            elif xc_type == 'GGA':
-                ao_dens = eval_ao(self._mol, self.part.grid_coords, deriv=1)
-                eval_ao_grid1 = ao_dens[0, :, :]
-                # eval_ao_grad_grid1 = ao_dens[1:, :, :]
-
+                Smo_a = np.array([np.dot(np.dot(occ_coeff_a.T, S_AO_frag), occ_coeff_a) for S_AO_frag in S_AO_frags])
+                Smo_b = np.array([np.linalg.multi_dot((occ_coeff_b.T, S_AO_frag, occ_coeff_b)) for S_AO_frag in S_AO_frags])
+                smo[0] = Smo_a
+                smo[1] = Smo_b
             else:
-                raise TypeError(f"Unknown XC type: {xc_type}")
+                smo = np.array([np.dot(np.dot(occ_coeff_a.T, S_AO_frag), occ_coeff_a) for S_AO_frag in S_AO_frags])
+            return smo
 
-            if self.unrestr:
-                eval_mo_grid1_b = np.ascontiguousarray(np.einsum('pa,ai->ip ', eval_ao_grid1, occ_coeff_b))
-                dens_grid_1_b = np.zeros((eval_mo_grid1_b.shape[1]))
-                for i in range(eval_mo_grid1_b.shape[0]):
-                    dens_grid_1_b += eval_mo_grid1_b[i, :] * eval_mo_grid1_b[i, :] * occ_b[i]
 
-            eval_mo_grid1_a = np.ascontiguousarray(np.einsum('pa,ai->ip ', eval_ao_grid1, occ_coeff_a))
-            dens_grid_1_a = np.zeros((eval_mo_grid1_a.shape[1]))
-            for i in range(eval_mo_grid1_a.shape[0]):
-                dens_grid_1_a += eval_mo_grid1_a[i, :] * eval_mo_grid1_a[i, :] * occ_a[i]
 
-            total_elect_int_1_a = np.sum(dens_grid_1_a * mol_w * wq)
-            if APOSTBase.unrestr:
-                print('CHECK ALPHA TOTAL ELECT INT 1', total_elect_int_1_a)
-                total_elect_int_1_b = np.sum(dens_grid_1_b * mol_w * wq)
-                print('CHECK BETA TOTAL ELECT INT ', total_elect_int_1_b)
-            else:
-                print('CHECK TOTAL ELECT INT 1', total_elect_int_1_a)
-
-        elif self.cas or self._fci:
-            if self.cas:
-                # For now only restricted CASSCF --> Underlying mo coeffs in one matrix (R or RO)
-                mo_coeff = self._cas_mo_coeff
-                norb = self._cas_data['ncas'] + self._cas_data['ncore']
-            elif self._fci:
-                mo_coeff = self._fci_mo_coeff
-                norb = self._fci_data['norb']
-
-            grid_coords1 = np.ascontiguousarray(copy.copy(self.part.grid_coords))
-            print(f'TOTAL NUMBER OF GRID1 POINTS: {grid_coords1.shape}')
-
-            eval_ao_grid1 = eval_ao(self._mol, grid_coords1, deriv=0)
-            eval_mo_grid1_a = np.einsum('pa,ai->ip ', eval_ao_grid1, mo_coeff[:, :norb])
-
-            dens_grid_1 = np.zeros((eval_mo_grid1_a.shape[1]))
-            for i in range(eval_mo_grid1_a.shape[0]):
-                for j in range(eval_mo_grid1_a.shape[0]):
-                    dens_grid_1 += eval_mo_grid1_a[i, :] * eval_mo_grid1_a[j, :] * self._dij[i,j]
-
-            total_elect_int_1 = np.sum(dens_grid_1 * mol_w * wq)
-            print('CHECK ALPHA TOTAL ELECT INT 1', total_elect_int_1)
-
-        # Generate SMO
-        if self.unrestr and not (self.cas or self._fci):
-            thresh = 1e-10
-            smo = np.zeros((2, len(self.at_nums), eval_mo_grid1_a.shape[0], eval_mo_grid1_a.shape[0]))
-            for ia in range(len(self.at_nums)):
-                sij_alpha = np.sum(eval_mo_grid1_a[None, :] * self.part.aim_w_allp[ia] * eval_mo_grid1_a[:, None, :] * wq * mol_w, axis=-1)
-                sij_beta = np.sum(eval_mo_grid1_b[None, :] * self.part.aim_w_allp[ia] * eval_mo_grid1_b[:, None, :] * wq * mol_w, axis=-1)
-                smo[0, ia, :, :] = sij_alpha
-                smo[1, ia, :self.occ_b[self.occ_b > thresh].shape[0], :self.occ_b[self.occ_b > thresh].shape[ 0]] = sij_beta
-
-                # sij_alpha = np.sum(eval_mo_grid1_a[None, :] * self.part.aim_w_allp[ia] * eval_mo_grid1_a[ :, None, :] * wq * mol_w, axis=-1)
-                # sij_beta = np.sum(eval_mo_grid1_b[None, :] * self.part.aim_w_allp[ia] * eval_mo_grid1_b[:, None, :] * wq * mol_w, axis=-1)
-                # smo[ia, :, :] = sij_alpha
-                # smo[1, ia, :self.occ_b[self.occ_b > 0].shape[0], :self.occ_b[self.occ_b > 0].shape[0]] = sij_beta
-        else:
-            smo = np.zeros((len(self.at_nums), eval_mo_grid1_a.shape[0], eval_mo_grid1_a.shape[0]))
-            for ia in range(len(self.at_nums)):
-                sij_alpha = np.sum(eval_mo_grid1_a[None, :] * self.part.aim_w_allp[ia] * eval_mo_grid1_a[:, None, :] * wq * mol_w, axis=-1)
-                smo[ia, :, :] = sij_alpha
-        return smo
 
 
 
@@ -1177,7 +1214,6 @@ class Rpart(object):
         # coords_to_roatate = copy.copy(self._grid.coords)
         print(f'ROTATING THE GRID PHA={pha}, PHB={phb}')
         rot_mat =  scipy.spatial.transform.Rotation.from_euler('zx', [-phb, -pha], degrees=False).as_matrix()
-        print(rot_mat)
         for ia in range(len(grid_coords2_pre)):
             grid_coords2_pre[ia] = np.dot(grid_coords2_pre[ia], rot_mat)
             grid_coords2_pre[ia] = grid_coords2_pre[ia] + at_coords[ia]
@@ -1199,7 +1235,7 @@ class Rpart(object):
 
 class Hpart(object):
     """Hpart class"""
-    def __init__(self, part_name, mol, frags=None):
+    def __init__(self, part_name, mol, calc, frags=None):
         # Generate Eta matrices
         # First parse necessary data from Mole object
         self._part_name = part_name
@@ -1217,10 +1253,12 @@ class Hpart(object):
             else:
                 self._frags = frags
                 zatoms = mol.atom_charges()
-                self._zfrags = [sum(zatoms[i - 1] for i in group) for group in frags]
+                self._zfrags = [sum(zatoms[i - 1] for i in group) for group in self._frags]
         else:
             # Force to have atoms as frags
             self._frags = np.array([[i+1] for i in range(mol.natm)])
+            zatoms = mol.atom_charges()
+            self._zfrags = [sum(zatoms[i - 1] for i in group) for group in self._frags]
 
         # Assuming always frags stored, either information passed or atoms
         eta_frags = np.zeros((len(self._frags), self.num_ao, self.num_ao))
@@ -1240,10 +1278,14 @@ class Hpart(object):
             self._T = np.linalg.inv(self._T_inv)
         elif part_name == "meta_lowdin":
             self._T_inv = lo.orth_ao(mol, part_name, pre_orth_ao="ANO")
+            # self._T_inv = lo.orth_ao(mol, part_name, pre_orth_ao=None)
             self._T = np.linalg.inv(self._T_inv)
         elif part_name == "nao":
-            self._T_inv = lo.nao.nao(mol, part_name)
+            # self._T_inv = lo.nao.nao(mol, calc, part_name)
+            self._T_inv = lo.nao.nao(mol, calc)
             self._T = np.linalg.inv(self._T_inv)
+        elif part_name == 'IAO':
+            raise NotImplementedError('IAO partition not implemented yet.')
 
 
 
