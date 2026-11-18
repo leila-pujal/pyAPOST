@@ -22,7 +22,6 @@ def compute_energy_terms(APOSTBase, term='all', out=True):
         dm_b = APOSTBase.dm_b
         dm = APOSTBase.dm_a + APOSTBase.dm_b
     else:
-        print(APOSTBase.dm_a)
         dm = APOSTBase.dm_a
 
     # Check. What Mo coefficients do I need to pass to transform to ao2mo for unrestricted?
@@ -72,7 +71,6 @@ def compute_energy_terms(APOSTBase, term='all', out=True):
                 occ_b[:APOSTBase.occ_b[APOSTBase.occ_b > 0].shape[0]] = APOSTBase.occ_b[APOSTBase.occ_b > 0]
                 dm1_b = np.diag(occ_b)
                 eri4 = APOSTBase._mol.ao2mo(APOSTBase.mo_coeff_a[:, : APOSTBase.occ_a[APOSTBase.occ_a > 0].shape[0]])
-                print(APOSTBase.occ_a[APOSTBase.occ_a > 0].shape[0])
                 eri_4fold = ao2mo.restore(1, eri4, APOSTBase.occ_a[APOSTBase.occ_a > 0].shape[0])
                 print('Shape eri4 fold', eri_4fold.shape)
 
@@ -110,7 +108,7 @@ def compute_energy_terms(APOSTBase, term='all', out=True):
     if 'Exch' in term or 'all' in term :
         if APOSTBase.unrestr and not APOSTBase.cas and not APOSTBase._fci:
             e_terms['x_a'] =  -0.5 * np.einsum("abba->", eri_4fold_a)
-            e_terms['x_b'] =  - 0.5 *np.einsum("abba->", eri_4fold_b)
+            e_terms['x_b'] =  -0.5*np.einsum("abba->", eri_4fold_b)
         else:
             if APOSTBase.cas or APOSTBase._fci:
                 #sfdm1 = np.zeros((norb, norb)) #spinfree density
