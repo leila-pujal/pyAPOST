@@ -1,4 +1,4 @@
-# IQA module Single Determinant
+# IQA module Single Determinant Real space partitioning
 import copy as copy
 import time as time
 
@@ -82,7 +82,7 @@ def _exchange_integral(id_p1, p1, mo_grid1, mo_grid2, atgrid_idx_b, a_grid_coord
 
 
 
-def nn_energy(at_nums, at_coords):
+def nn_energy(at_nums, at_coords, all_terms=False):
     r"""Compute nuclear-nuclear repulsion energy.
 
     math::
@@ -97,16 +97,28 @@ def nn_energy(at_nums, at_coords):
     """
     # Compute Nucleus-Nucleus repulsion
     logging.info("CALCULATING NUCLEAR REPULSION ENERGY")
-    rab = np.triu(np.linalg.norm(at_coords[:, None] - at_coords, axis=-1))
-    atomic_charges = np.triu(at_nums[:, None] * at_nums)[np.where(rab > 0)]
-    rab = rab[rab > 0]
-    print('VERBOSE NN')
-    print(atomic_charges / rab)
-    nn_e = np.sum(atomic_charges / rab)
-    print("NN ENERGY: ", nn_e)
-    print()
+    if all_terms:
+        rab = np.linalg.norm(at_coords[:, None] - at_coords, axis=-1)
+        atomic_charges = (at_nums[:, None] * at_nums)[np.where(rab > 0)]
+        nn_at = (at_nums[:, None] * at_nums) / rab
+        for i in range(len(at_nums)):
+            nn_at[i][i] = 0
+        nn_e = 0.5 * np.sum(nn_at, axis=-1)
+        # nn_at = np.sum(nn_at, axis=-1)
+        nn_e = np.sum(nn_e)
+    else:
+        rab = np.triu(np.linalg.norm(at_coords[:, None] - at_coords, axis=-1))
+        atomic_charges = np.triu(at_nums[:, None] * at_nums)[np.where(rab > 0)]
+        rab = rab[rab > 0]
+        nn_e = np.sum(atomic_charges / rab)
+        nn_at = atomic_charges / rab
 
-    return nn_e
+
+    print("NN ENERGY: ", nn_e)
+    print("NN AT", nn_at)
+    print("NN AT", len(nn_at))
+
+    return nn_e, nn_at
 
 def en_energy(at_nums, at_coords, grid_coords, dens, int_w, aim_w, atgrid_idx):
     r"""Compute IQA's electron-nuclear attraction energy.
@@ -166,7 +178,6 @@ def en_energy(at_nums, at_coords, grid_coords, dens, int_w, aim_w, atgrid_idx):
         share_matrix[i, i, :] = share_factor
         share_matrix[i, :, i] = 1 - share_factor
         share_matrix[i, i, i] = 1
-
     en_cond_en = np.sum(en_atomic_matrix[None, :, :] * share_matrix, axis=(1, 2))
     assert np.allclose(np.sum(en_cond_en), t_en, atol=1e-6)
 
@@ -191,11 +202,10 @@ def kin_energy(at_nums, at_coords, mol, mo_coeff, occs, grid_coords, wq, aim_w, 
     # Get the gradients.
     eval_d_ao = eval_ao(mol, grid_coords, deriv=1)
     # eval_d_ao = eval_ao(mol, grid_coords)
-    print(eval_d_ao.shape)
     # Build MO gradients
     # 100/100, 010/010, 001/001
     eval_d_ao = eval_d_ao.transpose(0, 2, 1)
-    # Start with  restricted hf closed shell so only one set of orbitals
+    # Start with restricted hf closed shell so only one set of orbitals
     eval_d_mo = np.einsum('dmn, mi -> din', eval_d_ao, mo_coeff)
 
     kin = np.zeros(grid_coords.shape[0])
@@ -1330,7 +1340,7 @@ def iqa_atomic(APOSTBase, ee_hf=True, out=True):
 
 
     else:
-        iqa_r_b['t_nn'] = nn_energy(at_nums, at_coords)
+        iqa_r_b['t_nn'], iqa_r_b['at_nn'] = nn_energy(at_nums, at_coords)
         if xc_type == 'GGA':
             iqa_r_a['t_en'], iqa_r_a['at_en'], iqa_r_a['at_en_cond'] = en_energy(at_nums, at_coords, grid_coords, rho_a[0], wq, mol_w, atgrid_idx)
         else:
