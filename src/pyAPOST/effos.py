@@ -15,7 +15,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger()
 
 def smo_hilb(APOSTBase, gen=False):
-    """"Function to return effos and occupations"""
+    """" Function to return effos and occupations"""
 
     # Generate S_AO_frags
     if APOSTBase.part.part_name == 'mulliken':
@@ -24,7 +24,6 @@ def smo_hilb(APOSTBase, gen=False):
     else:
         S_AO_frags = [np.linalg.multi_dot((APOSTBase.part.T.T, eta_slice, APOSTBase.part.T)) for
                       eta_slice in APOSTBase.part.eta_frags]
-
     if gen: #Generalized effos obtained with Paired and Unpaired densities
         # Todo: Test checking all this sorting works
         # Because in APOSTBase we always save alpha/beta molecular coefficients and generalized is based on paired/unpaired density we sum them here
@@ -42,7 +41,7 @@ def smo_hilb(APOSTBase, gen=False):
         elif APOSTBase.cas or APOSTBase.ccsd:
             # In APOSTbase we always generate dm_a and dm_b. For generalized effos original code APOSTpy works with paired Dm by calling
             # mcscf.addons.make_rdm1() instead of mcscf.addons.make_rdm1s(). Internally PySCF generates Dm returned by mcscf.addons.make_rdm1()
-            # by adding dma and dmb in pyscf/fci/direct_spin1.py def make_rdm1. Here we are adding coefficents
+            # by adding dma and dmb in pyscf/fci/direct_spin1.py def make_rdm1. Here we are adding coefficients
             occ = APOSTBase.occ_a + APOSTBase.occ_b
             occ_coeff = APOSTBase.mo_coeff_a + APOSTBase.occ_b
 
@@ -71,20 +70,28 @@ def smo_hilb(APOSTBase, gen=False):
 
     else:
         # Standard effos obtained with Alpha and Beta densities
-        # TODO: Make "thresh" availble to specify
+        # TODO: Make "thresh" available to specify
         thresh = 1.0e-8
         occ_coeff_a = APOSTBase.mo_coeff_a[:, APOSTBase.occ_a > thresh]
         occ_coeff_b = APOSTBase.mo_coeff_b[:, APOSTBase.occ_b > thresh]
 
-        # Q: Smo_a changes for every calculation?
         Smo_a = np.array([np.dot(np.dot(occ_coeff_a.T, S_AO_frag), occ_coeff_a)  for S_AO_frag in S_AO_frags])
         Smo_b = np.array([np.linalg.multi_dot((occ_coeff_b.T, S_AO_frag, occ_coeff_b))  for S_AO_frag in S_AO_frags])
 
         # Normalize Smo_a and Smo_b for post-hartree fock methods
         if APOSTBase._cas or APOSTBase._ccsd:
-            norm_occ_a = np.sqrt(APOSTBase.occ_a[APOSTBase.occ_a > thresh])[:, None] * np.sqrt(APOSTBase.occ_a[APOSTBase.occ_a > thresh])[None, :]
-            norm_occ_b = np.sqrt(APOSTBase.occ_b[APOSTBase.occ_b > thresh])[:, None] * np.sqrt(APOSTBase.occ_b[APOSTBase.occ_b > thresh])[None, :]
-
+            # Fixme: Ugly fix to get range 0-1 instead of 0-2 for Restricted HF CASSCF. Not changing underlying base method because
+            # I need to check how it afects IQA-phf
+            if APOSTBase.unrestr:
+                occ_a = APOSTBase.occ_a
+                occ_b = APOSTBase.occ_b
+            else:
+                occ_a = APOSTBase.occ_a/2
+                occ_b = APOSTBase.occ_b/2
+            # norm_occ_a = np.sqrt(APOSTBase.occ_a[APOSTBase.occ_a > thresh])[:, None] * np.sqrt(APOSTBase.occ_a[APOSTBase.occ_a > thresh])[None, :]
+            # norm_occ_b = np.sqrt(APOSTBase.occ_b[APOSTBase.occ_b > thresh])[:, None] * np.sqrt(APOSTBase.occ_b[APOSTBase.occ_b > thresh])[None, :]
+            norm_occ_a = np.sqrt(occ_a[APOSTBase.occ_a > thresh])[:, None] * np.sqrt(occ_a[APOSTBase.occ_a > thresh])[None, :]
+            norm_occ_b = np.sqrt(occ_b[APOSTBase.occ_b > thresh])[:, None] * np.sqrt(occ_b[APOSTBase.occ_b > thresh])[None, :]
             Smo_a = Smo_a * norm_occ_a[None, :, :]
             Smo_b = Smo_b * norm_occ_b[None, :, :]
 
@@ -415,10 +422,13 @@ def effos_occ(smo1, nelect1, smo2, nelect2, frags=None, gen=False):
     eig_2_r = [round(egv, 5) for egv in eig_2]
     # Checking if the last assignation corresponds to a degenerate atomic orbital
     # Todo: Check if we could condense the two if statements
-    if eig_1_r.index(eig_1_r[nelect1]) > 1:
-        logger.info('  EOS: Warning, pseudo-degeneracies detected for Alpha/Paired effos')
-        deg_idx_1 = np.array([i for i, x in enumerate(eig_1_r) if x == eig_1_r[nelect1]])
+    # Todo: Missing tests to identify degenerancy.
+    # Before there was a bug that modified the fu and lo spuriously.
+    deg_idx_1 = np.array([i for i, x in enumerate(eig_1_r) if x == eig_1_r[nelect1]])
+    # if eig_1_r.index(eig_1_r[nelect1]) > 1:
+    if np.sum(deg_idx_1 <= nelect1-1) > 0:
         frac_1 = np.sum(deg_idx_1 <= nelect1-1) / deg_idx_1.size
+        logger.info('  EOS: Warning, pseudo-degeneracies detected for Alpha/Paired effos')
         logger.info(f'  Distributing {np.sum(deg_idx_1 <= nelect1-1)} electrons over {deg_idx_1.size} pseudodegenerate atomic orbital')
         logger.debug(f'  Frac occupation: {frac_1: .3f} \n')
         # Update occupation for degenerate orbitals
@@ -428,7 +438,8 @@ def effos_occ(smo1, nelect1, smo2, nelect2, frags=None, gen=False):
             add_e_1[occs_1[i]] += frac_1
             if i < nelect1:
                 sub_e_1[occs_1[i]] += 1
-        frag_occs_1 -= sub_e_1
+        # frag_occs_1 -= sub_e_1
+        frag_occs_1 += (-sub_e_1)
         frag_occs_1 += add_e_1
 
         # Update with new occupations
@@ -439,10 +450,13 @@ def effos_occ(smo1, nelect1, smo2, nelect2, frags=None, gen=False):
 
         lo_1 = (nelect1 + diff_1) - 1  # Python index
         fu_1 = nelect1 + diff_1  # Python index
+    else:
+        logger.info(' No degenerancy detected for ALPHA/Paired effos')
 
-    if eig_2_r.index(eig_2_r[nelect2]) > 1:
+    deg_idx_2 = np.array([i for i, x in enumerate(eig_2_r) if x == eig_2_r[nelect2]])
+    # if eig_2_r.index(eig_2_r[nelect2]) > 1:
+    if np.sum(deg_idx_2 <= nelect2 - 1):
         logger.info('  EOS: Warning, pseudo-degeneracies detected for Beta/Unpaired effos')
-        deg_idx_2 = np.array([i for i, x in enumerate(eig_2_r) if x == eig_2_r[nelect2]])
         frac_2 = np.sum(deg_idx_2 <= nelect2 - 1) / deg_idx_2.size
         logger.info(f'  Distributing {np.sum(deg_idx_2 <= nelect2 - 1)} electrons over {deg_idx_2.size} pseudodegenerate atomic orbital')
         logger.debug(f'  Frac occupation: {frac_2: .4f} \n')
@@ -453,7 +467,8 @@ def effos_occ(smo1, nelect1, smo2, nelect2, frags=None, gen=False):
             add_e_2[occs_2[i]] += frac_2
             if i < nelect2:
                 sub_e_2[occs_2[i]] += 1
-        frag_occs_2 -= sub_e_2
+        # frag_occs_2 -= sub_e_2
+        frag_occs_2 += (-sub_e_2)
         frag_occs_2 += add_e_2
 
         # Update with new occupations
@@ -464,6 +479,9 @@ def effos_occ(smo1, nelect1, smo2, nelect2, frags=None, gen=False):
 
         lo_2 = (nelect2 + diff_2) - 1  # Python index
         fu_2 =  (nelect2 + diff_2)  # Python index
+    else:
+        logger.info(' No degenerancy detected for Beta/Unpaired effos')
+
 
     # Molecule LO/FU
     # lo_1 = nelect1 - 1  # Python index
@@ -627,7 +645,7 @@ def dump_molden(APOSTBase, filename, eigval, eigvec, eta_frags, mol, thresh=0.01
         else:
             raise ValueError('Effos in orthogonal basis needs a transformation matrix')
 
-        # Equation to obtain the Effaos for Orthogonal Hilbert partitons (e.g Lowdin) expressed in the original non-orthogonal AO base
+        # Equation to obtain the EffAOos for Orthogonal Hilbert partitons (e.g Lowdin) expressed in the original non-orthogonal AO base
         # \chi_k = \frac{1}{\sqrt{\lambda_k}} \sum_{l}\sum_{\nu\sigma\mu i} S^{-\frac{1}{2}}_{l \nu} \eta_{\nu \sigma} S^{\frac{1}{2}}_{\sigma \mu} C_{\mu i} U_{ik} \phi_{l}(r)
         # Transform MOs from LCAO(AO non-orthogonal) to Orthogonal AO basis: S^{\frac{1}{2}}_{\sigma \mu} C_{\mu i}
         orth_coeff = np.einsum('la,ai -> li', t, occ_coeff)
@@ -882,60 +900,60 @@ def EOS_calc(APOSTBase, gen=False, vis=None, log='info'):
             if frag_fu_1[f] and frag_fu_1[f][-1] == 'fu':
                 if frag_lo_2[f] and frag_lo_2[f][-1] == 'lo':
                     if frag_fu_2[f] and frag_fu_2[f][-1] == 'fu':
-                        logger.info(f"  Frag{f:<4}  {round(frag_occs_1[f],1):<3}  {round(frag_lo_1[f][1], 3):<8} {round(frag_fu_1[f][1], 3):<11}   {round(frag_occs_2[f],0):<9} {round(frag_lo_2[f][1],3):<8} {round(frag_fu_2[f][1],3):<11} {os[f]:<3}")
+                        logger.info(f"  Frag{f:<4}  {round(frag_occs_1[f],1):<3}  {round(frag_lo_1[f][1], 3):<8} {round(frag_fu_1[f][1], 3):<11}   {round(frag_occs_2[f],1):<9} {round(frag_lo_2[f][1],3):<8} {round(frag_fu_2[f][1],3):<11} {os[f]:<3}")
                     else:
-                        logger.info(f"  Frag{f:<4}  {round(frag_occs_1[f],1):<3}  {round(frag_lo_1[f][1], 3):<8} {round(frag_fu_1[f][1], 3):<11}   {round(frag_occs_2[f],0):<9} {round(frag_lo_2[f][1],3):<8} {'-':<11} {os[f]:<3}")
+                        logger.info(f"  Frag{f:<4}  {round(frag_occs_1[f],1):<3}  {round(frag_lo_1[f][1], 3):<8} {round(frag_fu_1[f][1], 3):<11}   {round(frag_occs_2[f],1):<9} {round(frag_lo_2[f][1],3):<8} {'-':<11} {os[f]:<3}")
                 else:
                     if frag_fu_2[f] and frag_fu_2[f][-1] == 'fu':
                         logger.info(
-                            f"  Frag{f:<4}  {round(frag_occs_1[f], 1):<3}  {round(frag_lo_1[f][1], 3):<8} {round(frag_fu_1[f][1], 3):<11}   {round(frag_occs_2[f], 0):<9} {'-':<8} {round(frag_fu_2[f][1], 3):<11} {os[f]:<3}")
+                            f"  Frag{f:<4}  {round(frag_occs_1[f], 1):<3}  {round(frag_lo_1[f][1], 3):<8} {round(frag_fu_1[f][1], 3):<11}   {round(frag_occs_2[f], 1):<9} {'-':<8} {round(frag_fu_2[f][1], 3):<11} {os[f]:<3}")
                     else:
                         logger.info(
-                            f"  Frag{f:<4}  {round(frag_occs_1[f], 1):<3}  {round(frag_lo_1[f][1], 3):<8} {round(frag_fu_1[f][1], 3):<11}   {round(frag_occs_2[f], 0):<9} {'-':<8} {'-':<11} {os[f]:<3}")
+                            f"  Frag{f:<4}  {round(frag_occs_1[f], 1):<3}  {round(frag_lo_1[f][1], 3):<8} {round(frag_fu_1[f][1], 3):<11}   {round(frag_occs_2[f], 1):<9} {'-':<8} {'-':<11} {os[f]:<3}")
             else:
                 if frag_lo_2[f] and frag_lo_2[f][-1] == 'lo':
                     if frag_fu_2[f] and frag_fu_2[f][-1] == 'fu':
-                        logger.info(f"  Frag{f:<4}  {round(frag_occs_1[f],1):<3}  {round(frag_lo_1[f][1], 3):<8} {'-':<11}   {round(frag_occs_2[f],0):<9} {round(frag_lo_2[f][1],3):<8} {round(frag_fu_2[f][1],3):<11} {os[f]:<3}")
+                        logger.info(f"  Frag{f:<4}  {round(frag_occs_1[f],1):<3}  {round(frag_lo_1[f][1], 3):<8} {'-':<11}   {round(frag_occs_2[f],1):<9} {round(frag_lo_2[f][1],3):<8} {round(frag_fu_2[f][1],3):<11} {os[f]:<3}")
                     else:
-                        logger.info(f"  Frag{f:<4}  {round(frag_occs_1[f],1):<3}  {round(frag_lo_1[f][1], 3):<8} {'-':<11}   {round(frag_occs_2[f],0):<9} {round(frag_lo_2[f][1],3):<8} {'-':<11} {os[f]:<3}")
+                        logger.info(f"  Frag{f:<4}  {round(frag_occs_1[f],1):<3}  {round(frag_lo_1[f][1], 3):<8} {'-':<11}   {round(frag_occs_2[f],1):<9} {round(frag_lo_2[f][1],3):<8} {'-':<11} {os[f]:<3}")
                 else:
                     if frag_fu_2[f] and frag_fu_2[f][-1] == 'fu':
                         logger.info(
-                            f"  Frag{f:<4}  {round(frag_occs_1[f], 1):<3}  {round(frag_lo_1[f][1], 3):<8} {'-':<11}   {round(frag_occs_2[f], 0):<9} {'-':<8} {round(frag_fu_2[f][1], 3):<11} {os[f]:<3}")
+                            f"  Frag{f:<4}  {round(frag_occs_1[f], 1):<3}  {round(frag_lo_1[f][1], 3):<8} {'-':<11}   {round(frag_occs_2[f], 1):<9} {'-':<8} {round(frag_fu_2[f][1], 3):<11} {os[f]:<3}")
                     else:
                         logger.info(
-                            f"  Frag{f:<4}  {round(frag_occs_1[f], 1):<3}  {round(frag_lo_1[f][1], 3):<8} {'-':<11}   {round(frag_occs_2[f], 0):<9} {'-':<8} {'-':<11} {os[f]:<3}")
+                            f"  Frag{f:<4}  {round(frag_occs_1[f], 1):<3}  {round(frag_lo_1[f][1], 3):<8} {'-':<11}   {round(frag_occs_2[f], 1):<9} {'-':<8} {'-':<11} {os[f]:<3}")
         else:
             if frag_fu_1[f] and frag_fu_1[f][-1] == 'fu':
                 if frag_lo_2[f] and frag_lo_2[f][-1] == 'lo':
                     if frag_fu_2[f] and frag_fu_2[f][-1] == 'fu':
                         logger.info(
-                            f"  Frag{f:<4}  {round(frag_occs_1[f], 1):<3}  {'-':<8} {round(frag_fu_1[f][1], 3):<11}   {round(frag_occs_2[f], 0):<9} {round(frag_lo_2[f][1], 3):<8} {round(frag_fu_2[f][1], 3):<11} {os[f]:<3}")
+                            f"  Frag{f:<4}  {round(frag_occs_1[f], 1):<3}  {'-':<8} {round(frag_fu_1[f][1], 3):<11}   {round(frag_occs_2[f], 1):<9} {round(frag_lo_2[f][1], 3):<8} {round(frag_fu_2[f][1], 3):<11} {os[f]:<3}")
                     else:
                         logger.info(
-                            f"  Frag{f:<4}  {round(frag_occs_1[f], 1):<3}  {'-':<8} {round(frag_fu_1[f][1], 3):<11}   {round(frag_occs_2[f], 0):<9} {round(frag_lo_2[f][1], 3):<8} {'-':<11} {os[f]:<3}")
+                            f"  Frag{f:<4}  {round(frag_occs_1[f], 1):<3}  {'-':<8} {round(frag_fu_1[f][1], 3):<11}   {round(frag_occs_2[f], 1):<9} {round(frag_lo_2[f][1], 3):<8} {'-':<11} {os[f]:<3}")
                 else:
                     if frag_fu_2[f] and frag_fu_2[f][-1] == 'fu':
                         logger.info(
-                            f"  Frag{f:<4}  {round(frag_occs_1[f], 1):<3}  {'-':<8} {round(frag_fu_1[f][1], 3):<11}   {round(frag_occs_2[f], 0):<9} {'-':<8} {round(frag_fu_2[f][1], 3):<11} {os[f]:<3}")
+                            f"  Frag{f:<4}  {round(frag_occs_1[f], 1):<3}  {'-':<8} {round(frag_fu_1[f][1], 3):<11}   {round(frag_occs_2[f], 1):<9} {'-':<8} {round(frag_fu_2[f][1], 3):<11} {os[f]:<3}")
                     else:
                         logger.info(
-                            f"  Frag{f:<4}  {round(frag_occs_1[f], 1):<3}  {'-':<8} {round(frag_fu_1[f][1], 3):<11}   {round(frag_occs_2[f], 0):<9} {'-':<8} {'-':<11} {os[f]:<3}")
+                            f"  Frag{f:<4}  {round(frag_occs_1[f], 1):<3}  {'-':<8} {round(frag_fu_1[f][1], 3):<11}   {round(frag_occs_2[f], 1):<9} {'-':<8} {'-':<11} {os[f]:<3}")
             else:
                 if frag_lo_2[f] and frag_lo_2[f][-1] == 'lo':
                     if frag_fu_2[f] and frag_fu_2[f][-1] == 'fu':
                         logger.info(
-                            f"  Frag{f:<4}  {round(frag_occs_1[f], 1):<3}  {'-':<8} {'-':<11}   {round(frag_occs_2[f], 0):<9} {round(frag_lo_2[f][1], 3):<8} {round(frag_fu_2[f][1], 3):<11} {os[f]:<3}")
+                            f"  Frag{f:<4}  {round(frag_occs_1[f], 1):<3}  {'-':<8} {'-':<11}   {round(frag_occs_2[f], 1):<9} {round(frag_lo_2[f][1], 3):<8} {round(frag_fu_2[f][1], 3):<11} {os[f]:<3}")
                     else:
                         logger.info(
-                            f"  Frag{f:<4}  {round(frag_occs_1[f], 1):<3}  {'-':<8} {'-':<11}   {round(frag_occs_2[f], 0):<9} {round(frag_lo_2[f][1], 3):<8} {'-':<11} {os[f]:<3}")
+                            f"  Frag{f:<4}  {round(frag_occs_1[f], 1):<3}  {'-':<8} {'-':<11}   {round(frag_occs_2[f], 1):<9} {round(frag_lo_2[f][1], 3):<8} {'-':<11} {os[f]:<3}")
                 else:
                     if frag_fu_2[f] and frag_fu_2[f][-1] == 'fu':
                         logger.info(
-                            f"  Frag{f:<4}  {round(frag_occs_1[f], 1):<3}  {'-':<8} {'-':<11}   {round(frag_occs_2[f], 0):<9} {'-':<8} {round(frag_fu_2[f][1], 3):<11} {os[f]:<3}")
+                            f"  Frag{f:<4}  {round(frag_occs_1[f], 1):<3}  {'-':<8} {'-':<11}   {round(frag_occs_2[f], 1):<9} {'-':<8} {round(frag_fu_2[f][1], 3):<11} {os[f]:<3}")
                     else:
                         logger.info(
-                            f"  Frag{f:<4}  {round(frag_occs_1[f], 1):<3}  {'-':<8} {'-':<11}   {round(frag_occs_2[f], 0):<9} {'-':<8} {'-':<11} {os[f]:<3}")
+                            f"  Frag{f:<4}  {round(frag_occs_1[f], 1):<3}  {'-':<8} {'-':<11}   {round(frag_occs_2[f], 1):<9} {'-':<8} {'-':<11} {os[f]:<3}")
 
 
 
@@ -945,12 +963,12 @@ def EOS_calc(APOSTBase, gen=False, vis=None, log='info'):
             # APOSTBase, filename, mo_coeff, fra_list, eig_list, spin = 'unpaired', thresh = 0.01, ignore_h = True
             eta_frags = APOSTBase.part.eta_frags
             ovlp = APOSTBase.ovlp
-            dump_molden(APOSTBase, 'test_molden', s1_egval, s1_egvec, eta_frags, APOSTBase._mol, spin='paired', ovlp=ovlp, transform_m=[APOSTBase.part.T, APOSTBase.part.T_inv])
-            dump_molden(APOSTBase, 'test_molden', s2_egval, s2_egvec, eta_frags, APOSTBase._mol, spin='unpaired', ovlp=ovlp, transform_m=[APOSTBase.part.T, APOSTBase.part.T_inv], file_molden='test_molden')
+            dump_molden(APOSTBase, 'test_molden_paired', s1_egval, s1_egvec, eta_frags, APOSTBase._mol, spin='paired', ovlp=ovlp, transform_m=[APOSTBase.part.T, APOSTBase.part.T_inv])
+            dump_molden(APOSTBase, 'test_molden_unpaired', s2_egval, s2_egvec, eta_frags, APOSTBase._mol, spin='unpaired', ovlp=ovlp, transform_m=[APOSTBase.part.T, APOSTBase.part.T_inv], file_molden='test_molden')
         elif vis == 'fchk':
             raise NotImplementedError
         else:
             raise TypeError('Dump file format not identified. Please choose from: Molden, fchk')
-    else:
-        raise NotImplementedError()
+    # else:
+    #     raise NotImplementedError()
 
