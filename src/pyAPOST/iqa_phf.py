@@ -1,4 +1,4 @@
-# IQA module Post Hartree-Fork
+# IQA module Post Hartree-Fock Real space
 import copy as copy
 import time as time
 
@@ -13,11 +13,10 @@ import logging
 from pyscf.dft.numint import eval_ao, eval_rho
 from pyscf import ao2mo
 
-# from pyAPOST.bond_order_wip1 import compute_bod
-from pyAPOST.iqa_sd import _coul_integral,_exchange_integral,  iqa_atomic, ee_hf_energy_interatomic
+from pyAPOST.iqa_sd import _coul_integral, iqa_atomic
 from pyAPOST.utils import out_summary_phf
-from pyAPOST.bond_order import  unpaired_elec, compute_bo
-
+from pyAPOST.bond_order import  unpaired_elec
+from pyAPOST.corr import generate_two_electron_density
 #Note:
 # Some of the functions, specially the ones dealing with ee integrals have significant amount of arguments
 # PySCF and Horton I think they use some type of internal cache of properties that the can access
@@ -74,50 +73,56 @@ def ee_terms_phf(at_nums, norb, dm1, dm2, grid_coords1, grid_coords2, mo_grid1, 
     start = time.time()
     cumulant_mat = np.zeros((len(at_nums), len(at_nums)))
 
-    # Now we compute the cumulant. for this we build spdm1 and psdm1
-    # norb = total orbitals CAS
-    # For now APOST names
-    sfdm1 = np.zeros((norb, norb)) #spinfree density
-    psdm1 = np.zeros((norb, norb)) # spin density
-    for i in range(norb):
-        for j in range(norb):
-            sfdm1[i,j] = dm1[i*2, j*2] + dm1[i*2+1, j*2+1]
-            psdm1[i,j] = dm1[i*2, j*2] - dm1[i*2+1, j*2+1]
-
-    #COMPUTE ALL CUMULANTS
-    xc_cumul = np.zeros((norb, norb, norb, norb))
-    x_cumul = np.zeros((norb, norb, norb, norb))
-    gx_cumul = np.zeros((norb, norb, norb, norb))
-    c_cumul = np.zeros((norb, norb, norb, norb))
-    c_gx_cumul = np.zeros((norb, norb, norb, norb))
-    print('STARTING LOOP')
-    print(dm2.shape)
-    for i in range(norb):
-        for j in range(norb):
-            for k in range(norb):
-                for l in range(norb):
-                    # Todo: check if below code can be achieved without the 4 index loop
-                    # xc cumulant--> without coulomb
-                    coult =sfdm1[i,j] * sfdm1[k,l]
-                    x1 = (sfdm1[i,k] * sfdm1[j,l])/2
-                    x2 = (psdm1[i,k] * psdm1[j,l])/2
-                    if u12 is not None:
-                        x_unp = (u12[i,k] * u12[j,l])/2
-                        gx_cumul[i, j, k, l] = -x1 - x_unp
-                        c_gx_cumul[i, j, k, l] = dm2[i, j, k, l] - coult + x1 + x_unp
-                    xc_cumul[i,j,k,l] = dm2[i,j,k,l] - coult
-                    c_cumul[i,j,k,l] = dm2[i,j,k,l] - coult + x1 + x2
-                    x_cumul[i,j,k,l] = - x1 - x2
+    # # Now we compute the cumulant. for this we build spdm1 and psdm1
+    # # norb = total orbitals CAS
+    # # For now APOST names
+    # sfdm1 = np.zeros((norb, norb)) #spinfree density
+    # psdm1 = np.zeros((norb, norb)) # spin density
+    # for i in range(norb):
+    #     for j in range(norb):
+    #         sfdm1[i,j] = dm1[i*2, j*2] + dm1[i*2+1, j*2+1]
+    #         psdm1[i,j] = dm1[i*2, j*2] - dm1[i*2+1, j*2+1]
+    #
+    # #COMPUTE ALL CUMULANTS
+    # xc_cumul = np.zeros((norb, norb, norb, norb))
+    # x_cumul = np.zeros((norb, norb, norb, norb))
+    # gx_cumul = np.zeros((norb, norb, norb, norb))
+    # c_cumul = np.zeros((norb, norb, norb, norb))
+    # c_gx_cumul = np.zeros((norb, norb, norb, norb))
+    # print('STARTING LOOP')
+    # print(dm2.shape)
+    # for i in range(norb):
+    #     for j in range(norb):
+    #         for k in range(norb):
+    #             for l in range(norb):
+    #                 # Todo: check if below code can be achieved without the 4 index loop
+    #                 # xc cumulant--> without coulomb
+    #                 coult =sfdm1[i,j] * sfdm1[k,l]
+    #                 x1 = (sfdm1[i,k] * sfdm1[j,l])/2
+    #                 x2 = (psdm1[i,k] * psdm1[j,l])/2
+    #                 if u12 is not None:
+    #                     x_unp = (u12[i,k] * u12[j,l])/2
+    #                     gx_cumul[i, j, k, l] = -x1 - x_unp
+    #                     c_gx_cumul[i, j, k, l] = dm2[i, j, k, l] - coult + x1 + x_unp
+    #                 xc_cumul[i,j,k,l] = dm2[i,j,k,l] - coult
+    #                 c_cumul[i,j,k,l] = dm2[i,j,k,l] - coult + x1 + x2
+    #                 x_cumul[i,j,k,l] = - x1 - x2
+    #
 
     if cumul == 'xc':
+        xc_cumul = generate_two_electron_density(norb,dm1, dm2, cumul_type=cumul, u12=u12)
         eigval_cumul, eigvec_cumul = _monadic_diag(xc_cumul)
     if cumul == 'c':
+        c_cumul = generate_two_electron_density(norb, dm1, dm2, cumul_type=cumul, u12=u12)
         eigval_cumul, eigvec_cumul = _monadic_diag(c_cumul)
     if cumul == 'c_gx':
+        c_gx_cumul = generate_two_electron_density(norb, dm1, dm2, cumul_type=cumul, u12=u12)
         eigval_cumul, eigvec_cumul = _monadic_diag(c_gx_cumul)
     if cumul == 'x':
+        x_cumul = generate_two_electron_density(norb, dm1, dm2, cumul_type=cumul, u12=u12)
         eigval_cumul, eigvec_cumul = _monadic_diag(x_cumul)
     if cumul == 'gx':
+        gx_cumul = generate_two_electron_density(norb, dm1, dm2, cumul_type=cumul, u12=u12)
         eigval_cumul, eigvec_cumul = _monadic_diag(gx_cumul)
     if cumul == 'dm2':
         eigval_cumul, eigvec_cumul = _monadic_diag(dm2)
@@ -359,8 +364,12 @@ def iqa_phf(APOSTBase, ph2=0.162, rij_v=1e-5, correlation='classic', ncpus=1, ze
         # phb_2 = 0.206
         # phb = 0.206
         # phb_2 = 0.17
-        phb = 0.206
-        phb_2 = 0.200
+        # 40 x 146
+        # phb = 0.22
+        # phb_2= 0.245
+        # O2_4 close distances (CASSCF 16orb,24elec)
+        phb = 0.245
+        phb_2 = 0.25
 
     else:
         phb = ph2
@@ -447,21 +456,20 @@ def iqa_phf(APOSTBase, ph2=0.162, rij_v=1e-5, correlation='classic', ncpus=1, ze
         iqa_phf['t_xc'] = np.sum(np.triu(iqa_phf['at_xc']))
     else:
         raise TypeError(f'Chose correlation type from classic/new. Got {correlation}')
-    print('DEV ZERO ERROR: FIRST SUMMARY')
-    iqa_phf['iqa_energy'] = out_summary_phf([iqa_phf], at_nums, APOSTBase.energy, correlation=True)
-    iqa_phf['pyscf_energy'] = APOSTBase.energy
-
-    if zero_name:
-        if correlation == 'new':
-            np.savez(f"{zero_name}_{correlation}_first_iqa.npz", **iqa_phf)
-        elif correlation == 'classic':
-            np.savez(f"{zero_name}_{correlation}_first_iqa.npz", **iqa_phf)
 
     if zero_error:
         # Compute total error
         if APOSTBase.unrestr:
             pass
         else:
+            if zero_name:
+                if correlation == 'new':
+                    np.savez(f"{zero_name}_{correlation}_first_iqa.npz", **iqa_phf)
+                elif correlation == 'classic':
+                    np.savez(f"{zero_name}_{correlation}_first_iqa.npz", **iqa_phf)
+            print('DEV ZERO ERROR: FIRST SUMMARY')
+            iqa_phf['iqa_energy'] = out_summary_phf([iqa_phf], at_nums, APOSTBase.energy, correlation=True)
+            iqa_phf['pyscf_energy'] = APOSTBase.energy
             vee_analytic = APOSTBase.energy - iqa_phf['t_nn'] - iqa_phf['t_kin'] - iqa_phf['t_en']
             vee_iqa =  iqa_phf['t_coul'] +  iqa_phf['t_x'] + iqa_phf['t_c']
             # vee_analytic = iqa_r_a['ee_analyt']
