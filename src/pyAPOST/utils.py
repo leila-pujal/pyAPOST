@@ -6,7 +6,6 @@ import copy as copy
 from pyscf.dft.numint import eval_ao, eval_rho
 
 
-
 # Note: if basis set big, for memory efficiency might be better to access already evaluated AO on the grid
 # insteadof calling eval_ao every time
 def eval_dens(mol, dm, coords):
@@ -506,15 +505,24 @@ def out_ee_terms_analyt(ee_terms, t_energy, nn_energy):
                 print(f'{ee_terms[term]: .5f}')
 
 
-def out_bo(at_nums, bo_dict):
-    """Printing BOD results"""
-
-    for scheme in bo_dict.keys():
-        logging.info('Summary Bond Order')
-        print(f'BOND ORDER: {scheme}')
-        for idx1, at1 in enumerate(at_nums):
-            row_r = []
-            for idx2, at2 in enumerate(at_nums):
-                row_r.append(str(round(bo_dict[scheme][idx1, idx2], 5)))
-            print(f"{at1}   " + " ".join(row_r))
+def out_bo(at_nums, index_dict, index_type='bond_order'):
+    """Printing BOD or Local spin analys results"""
+    if index_type in ['bond_order', 'local_spin']:
+        if index_type == 'bond_order':
+            label = 'Bond Order'
+        elif index_type == 'local_spin':
+            label = f"Local Spin decomposition a={str(round(index_dict['a'], 5))}"
+        for scheme in index_dict.keys():
+            if scheme in ['a', 'u_at', 't1', 't2']:
+                continue
+            logging.info(f'Summary {label}')
+            print(f'{label}: {scheme}')
+            for idx1, at1 in enumerate(at_nums):
+                row_r = []
+                for idx2, at2 in enumerate(at_nums):
+                    row_r.append(str(round(index_dict[scheme][idx1, idx2], 5)))
+                print(f"{at1}   " + " ".join(row_r))
+            print('Total:', round(np.sum(np.triu(index_dict[scheme])), 6))
+    else:
+        raise TypeError(f'Could not identify index type. Got{index_type}.')
 
