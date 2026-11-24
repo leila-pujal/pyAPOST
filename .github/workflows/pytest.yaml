@@ -1,0 +1,35 @@
+name: pytest
+on:
+  push:
+    branches:
+      - main
+      - dev
+    tags-ignore:
+      - '**'
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12']
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy scipy numba pyscf pytest
+      - name: Install development version
+        run: pip install -e .
+      # test_lih_fci_cc_pvtz is deselected for now because it takes too long.
+      - name: Run pytest
+        run: >
+          pytest -vv src/pyAPOST/tests
+          --deselect src/pyAPOST/tests/test_iqa_phf.py::test_lih_fci_cc_pvtz
