@@ -1,5 +1,8 @@
 # pyAPOST
 
+[![pytest](https://github.com/leila-pujal/pyAPOST/actions/workflows/pytest.yaml/badge.svg)](https://github.com/leila-pujal/pyAPOST/actions/workflows/pytest.yaml)
+![License](https://img.shields.io/github/license/leila-pujal/pyAPOST)
+[![Python](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 Python version of APOST3d developed as a PySCF extension.
 
 ```bash
