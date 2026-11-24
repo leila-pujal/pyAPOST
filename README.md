@@ -3,7 +3,9 @@
 [![pytest](https://github.com/leila-pujal/pyAPOST/actions/workflows/pytest.yaml/badge.svg)](https://github.com/leila-pujal/pyAPOST/actions/workflows/pytest.yaml)
 ![License](https://img.shields.io/github/license/leila-pujal/pyAPOST)
 [![Python](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
-Python version of APOST3d developed as a PySCF extension.
+## About
+pyAPOST is a post-processing package for computing chemical descriptors from the results of quantum chemistry calculations. It works in both Hilbert space and real space atomic partitioning schemes.
+
 
 ```bash
 # To install the repo
